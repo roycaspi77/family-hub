@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Family Hub</title>
+<meta name="theme-color" content="#2563eb">
+<meta name="referrer" content="no-referrer">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Family Hub">
+<script src="config.js"></script>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --ink:#1d2330; --muted:#6b7280; --line:#e3e6ea;
+          --accent:#2563eb; --ok:#15803d; --warn:#b45309; --bad:#dc2626;
+          --yellow:#facc15; --red:#dc2626; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111418; --card:#1b2027; --ink:#e8eaed; --muted:#9aa3ad; --line:#2b323b;
+            --accent:#60a5fa; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+         background:var(--bg); color:var(--ink); padding-bottom:76px; }
+  header { position:sticky; top:0; z-index:2; background:var(--card); border-bottom:1px solid var(--line);
+           padding:12px 16px; display:flex; justify-content:space-between; align-items:center; }
+  main { padding:12px 16px; max-width:640px; margin:0 auto; }
+  h2 { font-size:15px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:18px 0 8px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:10px; }
+  .card.yellow { border-left:5px solid var(--yellow); }
+  .card.red { border-left:5px solid var(--red); }
+  .row { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .muted { color:var(--muted); font-size:14px; }
+  .title { font-weight:600; }
+  .chip { display:inline-block; padding:2px 9px; margin:2px 4px 2px 0; border-radius:999px; font-size:13px; border:1px solid var(--line); }
+  .chip.pen { border-color:var(--bad); color:var(--bad); }
+  .overdue { color:var(--bad); } .soon { color:var(--warn); } .ok { color:var(--ok); }
+  .banner { background:var(--accent); color:#fff; border-radius:12px; padding:12px 14px; margin-bottom:10px; }
+  .btn { border:0; border-radius:10px; padding:9px 14px; font-size:15px; background:var(--accent); color:#fff; cursor:pointer; text-decoration:none; }
+  .btn.go { background:var(--ok); }
+  .btn.sec { background:transparent; color:var(--accent); border:1px solid var(--line); }
+  .btn.small { padding:5px 10px; font-size:13px; }
+  .btn:disabled { opacity:.5; }
+  input, select, textarea { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:8px;
+                            background:var(--bg); color:var(--ink); font:inherit; }
+  input[type=checkbox] { width:auto; }
+  label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
+  .check { display:flex; gap:8px; align-items:center; color:var(--ink); font-size:15px; }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:12px; }
+  table.cards { width:100%; border-collapse:collapse; }
+  table.cards td { padding:6px 4px; border-bottom:1px solid var(--line); }
+  table.cards td.n { text-align:center; width:64px; }
+  nav { position:fixed; bottom:0; left:0; right:0; display:flex; background:var(--card); border-top:1px solid var(--line); }
+  nav button { flex:1; border:0; background:none; padding:8px 0 12px; font-size:12px; color:var(--muted); cursor:pointer; }
+  nav button.on { color:var(--accent); font-weight:600; }
+  nav .ic { display:block; font-size:20px; }
+  .badge { background:var(--bad); color:#fff; border-radius:999px; font-size:11px; padding:0 6px; margin-left:2px; }
+  #toast { position:fixed; left:16px; right:16px; bottom:84px; background:#222; color:#fff; padding:10px 14px;
+           border-radius:10px; display:none; z-index:5; }
+</style>
+</head>
+<body>
+<header><strong>🏠 Family Hub</strong><span id="who" class="muted"></span></header>
+<main id="view"><p class="muted">Loading…</p></main>
+<nav id="nav"></nav>
+<div id="toast"></div>
+
+<script>
+let TOKEN = '', S = null, TAB = 'mine', EDITING = false;
+const $ = sel => document.querySelector(sel);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
+  c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+// A rotation slot is one name ("Noa") or a group ("Dad+Noa").
+const who = slot => String(slot || '').split('+').map(s => s.trim()).filter(Boolean).join(' & ');
+const list = s => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
+
+// text/plain keeps this a "simple" request, so Apps Script needs no CORS preflight.
+function call(fn, ...args) {
+  return fetch(window.FAMILY_HUB_API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ fn: fn, args: [TOKEN, ...args] }),
+  })
+    .then(r => r.json())
+    .then(res => { if (!res.ok) throw new Error(res.error); return res.data; })
+    .catch(e => { toast(e.message === 'Failed to fetch' ? 'No connection to the server' : e.message); throw e; });
+}
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.style.display = 'block';
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = 'none', 3500);
+}
+function update(state) { S = state; EDITING = false; render(); }
+function load() { if (!EDITING) call('getState').then(update).catch(() => {
+  if (!S) $('#view').innerHTML = '<div class="card">Could not load. Make sure you opened your personal link.</div>';
+}); }
+
+// ---------- formatting ----------
+function when(ms) {
+  if (!ms) return '';
+  const d = new Date(ms);
+  return d.toLocaleDateString(undefined, { weekday:'short', day:'numeric', month:'numeric' }) + ' ' +
+         d.toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit' });
+}
+function rel(ms) {
+  const diff = ms - Date.now(), abs = Math.abs(diff), h = abs / 3600000;
+  const txt = h < 1 ? Math.round(abs / 60000) + ' min' : h < 48 ? Math.round(h) + ' h' : Math.round(h / 24) + ' days';
+  return diff < 0 ? txt + ' ago' : 'in ' + txt;
+}
+function dueClass(ms) { const d = ms - Date.now(); return d < 0 ? 'overdue' : d < 3 * 3600000 ? 'soon' : ''; }
+function toInput(ms) { const d = new Date(ms); return new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16); }
+function tonight9pm() {
+  const d = new Date(); d.setHours(21, 0, 0, 0);
+  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);  // already past 21:00 → tomorrow
+  return d.getTime();
+}
+const STATUS = { done:'✅ Done', missed:'🟥 Missed', excused:'➖ Excused', cancelled:'🚫 Cancelled' };
+const CARD = { yellow:'🟨', red:'🟥' };
+const isMine = t => t.members.indexOf(S.me.name) >= 0;
+const pendingRequests = () => S.open.filter(t => t.extra_request === 'pending');
+
+// ---------- shell ----------
+function render() {
+  $('#who').textContent = S.me.name + (S.me.isAdmin ? ' · admin' : '');
+  const mine = S.open.filter(t => isMine(t) && t.type === 'task').length;
+  const tabs = [['mine','🙋','My turns', mine], ['schedule','📅','Schedule'], ['history','🕘','History'], ['board','📌','Board']];
+  if (S.me.isAdmin) tabs.push(['admin','⚙️','Admin', pendingRequests().length]);
+  $('#nav').innerHTML = tabs.map(([id, ic, label, n]) =>
+    `<button class="${TAB === id ? 'on' : ''}" onclick="go('${id}')"><span class="ic">${ic}</span>${label}${n ? `<span class="badge">${n}</span>` : ''}</button>`).join('');
+  $('#view').innerHTML = VIEWS[TAB]();
+  window.scrollTo(0, 0);
+}
+function go(tab) { TAB = tab; EDITING = false; render(); }
+
+function taskCard(t) {
+  const canAct = isMine(t) || S.me.isAdmin;
+  const redAt = t.due_at + S.config.graceHours * 3600000;
+  let state = t.status === 'in_progress' ? `▶ In progress since ${when(t.started_at)}` : 'Not started';
+  const extra = { pending:'⏳ Extra time requested', granted:'⏳ Extra time granted', refused:'⏳ Extra time refused' }[t.extra_request] || '';
+  let buttons = '';
+  if (canAct && t.status === 'assigned') {
+    buttons = `<button class="btn go" onclick="startTask('${t.id}', this)">▶ Start</button>`;
+  } else if (canAct && t.status === 'in_progress') {
+    buttons = `<input id="note-${t.id}" placeholder="Note (optional)" style="flex:1;min-width:140px">
+               <button class="btn" onclick="complete('${t.id}', this)">✓ Done</button>`;
+  }
+  if (isMine(t) && t.extra_request !== 'pending') {
+    buttons += `<button class="btn sec" onclick="askExtra('${t.id}')">⏳ Extra time</button>`;
+  }
+  return `<div class="card ${t.card}">
+    <div class="row"><span class="title">🧹 ${esc(t.title)} ${CARD[t.card] || ''}</span><span class="muted">${esc(who(t.assignee))}</span></div>
+    <div class="${dueClass(t.due_at)}">Due ${when(t.due_at)} · ${rel(t.due_at)}</div>
+    ${t.card === 'yellow' ? `<div class="overdue">🟨 Yellow card — finish by ${when(redAt)} to avoid a red card</div>` : ''}
+    <div class="muted">${state}${extra ? ' · ' + extra : ''}</div>
+    ${buttons ? `<div class="actions">${buttons}</div>` : ''}
+  </div>`;
+}
+
+function funCard(t) {
+  return `<div class="card">
+    <div class="row"><span class="title">🎉 ${esc(t.title)}</span><span class="muted">${esc(who(t.assignee))}</span></div>
+    <div>${when(t.due_at)} · ${rel(t.due_at)}</div>
+    <div class="muted">📍 ${t.place ? esc(t.place) : 'Place not set yet'}</div>
+  </div>`;
+}
+const turnCard = t => t.type === 'fun' ? funCard(t) : taskCard(t);
+const nextUp = a => a.upcoming.map(u => `<span class="chip ${u.penalty ? 'pen' : ''}" title="${u.penalty ? 'Extra turn (red card)' : ''}">${esc(who(u.name))}${u.penalty ? ' 🟥' : ''}</span>`).join('');
+
+// ---------- views ----------
+const VIEWS = {
+  mine() {
+    const byDue = (a, b) => a.due_at - b.due_at;
+    const mine = S.open.filter(isMine).sort(byDue);
+    const others = S.open.filter(t => !isMine(t) && t.type === 'task').sort(byDue);
+    const late = mine.filter(t => t.type === 'task' && t.due_at < Date.now()).length;
+    return (late ? `<div class="banner">⏰ You have ${late} overdue task${late > 1 ? 's' : ''}!</div>` : '') +
+      '<h2>My turns</h2>' + (mine.length ? mine.map(turnCard).join('') : '<div class="card muted">Nothing for you right now 🎉</div>') +
+      '<h2>Everyone else\'s tasks</h2>' + (others.length ? others.map(taskCard).join('') : '<div class="card muted">No open tasks.</div>');
+  },
+  schedule() {
+    const tasks = S.activities.filter(a => a.active && a.type === 'task');
+    const fun = S.activities.filter(a => a.active && a.type === 'fun');
+    return '<h2>Cards</h2><div class="card"><table class="cards"><tr><td></td><td class="n muted">🟨</td><td class="n muted">🟥</td></tr>' +
+        S.cards.map(c => `<tr><td>${esc(c.name)}</td><td class="n">${c.yellow}</td><td class="n">${c.red}</td></tr>`).join('') + '</table></div>' +
+      '<h2>Tasks</h2>' + (tasks.map(a => `<div class="card">
+        <div class="title">🧹 ${esc(a.name)}</div>
+        ${a.open.map(t => `<div>Now: <b>${esc(who(t.assignee))}</b> ${CARD[t.card] || ''} · <span class="${dueClass(t.due_at)}">due ${when(t.due_at)}</span></div>`).join('')}
+        <div class="muted" style="margin-top:6px">Next up:</div><div>${nextUp(a)}</div></div>`).join('') || '<div class="card muted">No tasks yet.</div>') +
+      '<h2>Fun</h2>' + (fun.map(a => `<div class="card">
+        <div class="row"><span class="title">🎉 ${esc(a.name)}</span><span class="muted">every ${a.frequency_days} day${a.frequency_days > 1 ? 's' : ''}</span></div>
+        ${a.open.map(t => `<div>Coming: <b>${esc(who(t.assignee))}</b> · ${when(t.due_at)}</div><div class="muted">📍 ${t.place ? esc(t.place) : 'Place not set yet'}</div>`).join('')}
+        <div class="muted" style="margin-top:6px">After that:</div><div>${nextUp(a)}</div></div>`).join('') || '<div class="card muted">No fun activities yet.</div>');
+  },
+  history() {
+    if (!S.history.length) return '<div class="card muted">No history yet.</div>';
+    return '<h2>Recent</h2>' + S.history.map(t => `<div class="card ${t.card}">
+      <div class="row"><span class="title">${t.type === 'fun' ? '🎉' : '🧹'} ${esc(t.title)} ${CARD[t.card] || ''}</span>
+        <span class="${t.status === 'done' ? 'ok' : t.status === 'missed' ? 'overdue' : 'muted'}">${STATUS[t.status] || esc(t.status)}</span></div>
+      <div class="muted">${esc(who(t.assignee))} · ${when(t.due_at)}${t.place ? ' · ' + esc(t.place) : ''}${t.completed_by && !t.members.includes(t.completed_by) ? ' · by ' + esc(t.completed_by) : ''}</div>
+      ${t.note ? `<div class="muted">“${esc(t.note)}”</div>` : ''}</div>`).join('');
+  },
+  board() {
+    return `<div class="card"><textarea id="noteText" rows="3" maxlength="500" placeholder="Write something for the family…" onfocus="EDITING=true"></textarea>
+      <div class="actions"><button class="btn" onclick="post(this)">Post</button></div></div>` +
+      S.board.map(n => `<div class="card"><div class="row"><b>${esc(n.author)}</b><span class="muted">${when(n.created_at)}</span></div>
+        <div style="white-space:pre-wrap">${esc(n.text)}</div>
+        ${n.author === S.me.name || S.me.isAdmin ? `<div class="actions"><button class="btn sec small" onclick="unpost('${n.id}', this)">Delete</button></div>` : ''}</div>`).join('');
+  },
+  admin() {
+    const requests = pendingRequests();
+    const tasks = S.activities.filter(a => a.type === 'task');
+    const fun = S.activities.filter(a => a.type === 'fun');
+    const openTasks = S.open.filter(t => t.type === 'task');
+    return (requests.length ? '<h2>Extra time requests</h2>' + requests.map(t => `<div class="card">
+        <div class="row"><span class="title">${esc(t.title)}</span><span class="muted">${esc(who(t.assignee))}</span></div>
+        <div>Due ${when(t.due_at)}</div>${t.extra_reason ? `<div class="muted">“${esc(t.extra_reason)}”</div>` : ''}
+        <div class="actions"><input id="hrs-${t.id}" type="number" min="1" max="72" value="1" style="width:70px"> hours
+          <button class="btn" onclick="answerExtra('${t.id}', val('hrs-${t.id}'), this)">Add time</button>
+          <button class="btn sec" onclick="answerExtra('${t.id}', 0, this)">Refuse</button></div></div>`).join('') : '') +
+      `<div class="actions" style="margin-top:${requests.length ? 18 : 0}px">
+        <button class="btn" onclick="editActivity('task')">+ New task</button>
+        <button class="btn" onclick="editActivity('fun')">+ New fun</button>
+        <button class="btn sec" onclick="editUser()">+ Add member</button>
+        <button class="btn sec" onclick="showLinks()">Personal links</button>
+        <button class="btn sec" onclick="runCheck(this)">Run check now</button></div>` +
+      '<h2>Tasks</h2>' + (tasks.map(a => `<div class="card">
+        <div class="row"><span class="title">🧹 ${esc(a.name)}${a.active ? '' : ' <span class="muted">(inactive)</span>'}</span>
+          <button class="btn sec small" onclick="editActivity('task', '${a.id}')">Edit</button></div>
+        <div class="muted">${esc(list(a.rotation).map(who).join(' → '))}</div>
+        ${a.active && a.upcoming.length ? `<div class="actions"><button class="btn" onclick="assignTask('${a.id}')">Assign to ${esc(who(a.upcoming[0].name))}${a.upcoming[0].penalty ? ' 🟥' : ''}</button></div>` : ''}
+      </div>`).join('') || '<div class="card muted">None yet.</div>') +
+      '<h2>Open tasks</h2>' + (openTasks.map(t => `<div class="card ${t.card}"><div class="row"><span class="title">${esc(t.title)} ${CARD[t.card] || ''}</span><span class="muted">${esc(who(t.assignee))}</span></div>
+        <div class="${dueClass(t.due_at)}">Due ${when(t.due_at)} · ${t.status === 'in_progress' ? 'in progress' : 'not started'}</div>
+        <div class="actions"><button class="btn sec small" onclick="editTurn('${t.id}')">Reassign / change due</button>
+        <button class="btn sec small" onclick="excuse('${t.id}', this)">Excuse (no card)</button></div></div>`).join('') || '<div class="card muted">None.</div>') +
+      '<h2>Fun</h2>' + (fun.map(a => { const t = a.open[0]; return `<div class="card">
+        <div class="row"><span class="title">🎉 ${esc(a.name)}${a.active ? '' : ' <span class="muted">(inactive)</span>'}</span>
+          <button class="btn sec small" onclick="editActivity('fun', '${a.id}')">Edit</button></div>
+        <div class="muted">Every ${a.frequency_days} days · ${esc(list(a.rotation).map(who).join(' → '))}</div>
+        ${t ? `<div style="margin-top:6px">Coming: <b>${esc(who(t.assignee))}</b> · ${when(t.due_at)} · 📍 ${t.place ? esc(t.place) : '—'}</div>
+          <div class="actions"><button class="btn" onclick="editTurn('${t.id}')">Update time &amp; place</button>
+          <button class="btn sec small" onclick="excuse('${t.id}', this)">Cancel this one</button></div>` : ''}
+      </div>`; }).join('') || '<div class="card muted">None yet.</div>') +
+      '<h2>Family</h2>' + S.users.map((u, i) => `<div class="card row"><div><span class="title">${esc(u.name)}</span> <span class="muted">${esc(u.role)}</span>
+        <div class="muted">${[u.notify_email && '✉️ email', u.notify_calendar && '📅 calendar', u.notify_whatsapp && '💬 WhatsApp'].filter(Boolean).join(' · ') || 'no notifications'}</div></div>
+        <button class="btn sec small" onclick="editUser(S.users[${i}].name)">Edit</button></div>`).join('');
+  },
+};
+
+// ---------- actions ----------
+function busy(btn) { if (btn) btn.disabled = true; }
+function act(btn, promise, msg) { busy(btn); promise.then(s => { if (msg) toast(msg); update(s); }).catch(() => { if (btn) btn.disabled = false; }); }
+function startTask(id, btn) { act(btn, call('startTurn', id), 'Started — good luck!'); }
+function complete(id, btn) { act(btn, call('completeTurn', id, $('#note-' + id).value), 'Nice! ✓'); }
+function post(btn) { act(btn, call('postNote', $('#noteText').value)); }
+function unpost(id, btn) { act(btn, call('deleteNote', id)); }
+function excuse(id, btn) { act(btn, call('adminExcuseTurn', id)); }
+function answerExtra(id, hours, btn) { act(btn, call('adminAnswerExtraTime', id, Number(hours)), Number(hours) ? 'Time added' : 'Refused'); }
+function runCheck(btn) { act(btn, call('adminRunCheck'), 'Checked'); }
+
+function form(title, body, onSave) {
+  EDITING = true;
+  $('#view').innerHTML = `<h2>${title}</h2><div class="card">${body}
+    <div class="actions"><button class="btn" id="saveBtn">Save</button><button class="btn sec" onclick="go(TAB)">Cancel</button></div></div>`;
+  $('#saveBtn').onclick = () => { busy($('#saveBtn')); onSave().then(update).catch(() => $('#saveBtn').disabled = false); };
+}
+const val = id => $('#' + id).value;
+const chk = id => $('#' + id).checked;
+const msOf = id => new Date(val(id)).getTime();
+
+function askExtra(id) {
+  const t = S.open.find(x => x.id === id);
+  form('Ask for extra time: ' + esc(t.title), `
+    <div class="muted">Due ${when(t.due_at)}. The admins will get your request by email.</div>
+    <label>Why do you need more time? (optional)</label><textarea id="x_reason" rows="3" maxlength="200"></textarea>`,
+    () => call('requestExtraTime', id, val('x_reason')));
+}
+
+function assignTask(activityId) {
+  const a = S.activities.find(x => x.id === activityId);
+  form('Assign: ' + esc(a.name), `
+    <div>To: <b>${esc(who(a.upcoming[0].name))}</b>${a.upcoming[0].penalty ? ' <span class="overdue">(extra turn after a red card)</span>' : ''}</div>
+    <label>Due date &amp; time</label><input id="as_due" type="datetime-local" value="${toInput(tonight9pm())}">
+    <div class="muted">An email and a calendar invite (2-hour reminder) will be sent.</div>`,
+    () => call('adminAssignTask', activityId, msOf('as_due')));
+}
+
+function editActivity(type, id) {
+  const a = S.activities.find(x => x.id === id) || { name:'', rotation:'', frequency_days:7, active:true };
+  const names = S.users.map(u => u.name).join(', ');
+  const isFun = type === 'fun';
+  form((id ? 'Edit ' : 'New ') + (isFun ? 'fun activity' : 'task'), `
+    <label>Name</label><input id="a_name" value="${esc(a.name)}" placeholder="${isFun ? 'Date with a parent · Movie night' : 'Laundry · Dishes'}">
+    <label>Rotation order (comma separated${isFun ? '; join people with + for a pair' : ''})</label>
+    <input id="a_rot" value="${esc(a.rotation)}" placeholder="${isFun ? 'Dad+Noa, Mom+Yuval' : 'Noa, Yuval, Yael'}">
+    <div class="muted">Members: ${esc(names)}</div>
+    ${isFun ? `<label>Repeat every (days)</label><input id="a_freq" type="number" min="1" value="${a.frequency_days}">` : ''}
+    ${isFun && !id ? `<label>Coming event: time</label><input id="a_first" type="datetime-local" value="${toInput(tonight9pm())}">
+      <label>Coming event: place</label><input id="a_place" placeholder="Ice cream at the mall">` : ''}
+    ${isFun && id ? '<div class="muted">To change the coming event, use “Update time &amp; place” in the Admin tab.</div>' : ''}
+    <label class="check"><input id="a_active" type="checkbox" ${a.active ? 'checked' : ''}> Active</label>`,
+    () => call('adminSaveActivity', {
+      id: id || '', type: type, name: val('a_name'), rotation: val('a_rot'), active: chk('a_active'),
+      frequency_days: isFun ? val('a_freq') : null,
+      first_at: isFun && !id ? msOf('a_first') : null,
+      place: isFun && !id ? val('a_place') : null,
+    }));
+}
+
+function editTurn(id) {
+  const t = S.open.find(x => x.id === id);
+  const isFun = t.type === 'fun';
+  form((isFun ? 'Update: ' : 'Reassign / change due: ') + esc(t.title), `
+    <label>${isFun ? 'Who (one name, or a pair like Dad+Noa)' : 'Assigned to'}</label>
+    <input id="t_who" list="t_names" value="${esc(t.assignee)}">
+    <datalist id="t_names">${S.users.map(u => `<option value="${esc(u.name)}">`).join('')}</datalist>
+    <label>${isFun ? 'Time' : 'Due'}</label><input id="t_due" type="datetime-local" value="${toInput(t.due_at)}">
+    ${isFun ? `<label>Place</label><input id="t_place" value="${esc(t.place)}">` : ''}
+    <div class="muted">An email and an updated calendar invite will be sent.</div>`,
+    () => call('adminEditTurn', id, { assignee: val('t_who'), due_at: msOf('t_due'), place: isFun ? val('t_place') : undefined }));
+}
+
+function editUser(name) {
+  const u = S.users.find(x => x.name === name) || { name:'', email:'', phone:'', role:'member', notify_email:true, notify_calendar:true, notify_whatsapp:false };
+  form(name ? 'Edit ' + esc(name) : 'Add member', `
+    ${name ? '' : '<label>Name (used in rotations, cannot be changed later)</label><input id="u_name">'}
+    <label>Role</label><select id="u_role"><option value="member">Member</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option></select>
+    <label>Email (for email + calendar invites)</label><input id="u_email" type="email" value="${esc(u.email)}">
+    <label>WhatsApp phone (international, e.g. +9725…)</label><input id="u_phone" type="tel" value="${esc(u.phone)}">
+    <label>CallMeBot API key ${u.has_whatsapp_key ? '(saved — leave empty to keep)' : ''}</label><input id="u_key" autocomplete="off">
+    <label class="check"><input id="u_ne" type="checkbox" ${u.notify_email ? 'checked' : ''}> Email notifications</label>
+    <label class="check"><input id="u_nc" type="checkbox" ${u.notify_calendar ? 'checked' : ''}> Calendar invites</label>
+    <label class="check"><input id="u_nw" type="checkbox" ${u.notify_whatsapp ? 'checked' : ''}> WhatsApp messages</label>`,
+    () => call('adminSaveUser', {
+      existing: name || '', name: name ? name : val('u_name'), role: val('u_role'), email: val('u_email'),
+      phone: val('u_phone'), whatsapp_apikey: val('u_key'),
+      notify_email: chk('u_ne'), notify_calendar: chk('u_nc'), notify_whatsapp: chk('u_nw'),
+    }));
+}
+
+function showLinks() {
+  EDITING = true;
+  call('adminGetLinks').then(links => {
+    $('#view').innerHTML = `<h2>Personal links</h2><div class="card muted">Each link logs that person in — share it only with them. On the phone: open it, then “Add to Home Screen”.</div>` +
+      links.map(l => `<div class="card"><b>${esc(l.name)}</b><input readonly value="${esc(l.url)}" onclick="this.select()" style="margin-top:6px">
+        <div class="actions"><a class="btn sec small" target="_blank" href="https://wa.me/?text=${encodeURIComponent('Your Family Hub link: ' + l.url)}">Send via WhatsApp</a></div></div>`).join('') +
+      `<button class="btn sec" onclick="go('admin')">Back</button>`;
+  });
+}
+
+// ---------- boot ----------
+// The personal link is …/#u=<token>. Remember it so the home-screen icon keeps
+// working even if the phone drops the #fragment.
+(function boot() {
+  const fromLink = new URLSearchParams(location.hash.slice(1)).get('u');
+  let saved = '';
+  try { saved = localStorage.getItem('familyHubToken') || ''; } catch (e) {}
+  TOKEN = fromLink || saved;
+  if (fromLink) { try { localStorage.setItem('familyHubToken', fromLink); } catch (e) {} }
+  if (!window.FAMILY_HUB_API) { $('#view').innerHTML = '<div class="card">The app is not configured yet (config.js).</div>'; return; }
+  if (!TOKEN) { $('#view').innerHTML = '<div class="card">This page needs your personal link. Ask Mom or Dad for it.</div>'; return; }
+  load();
+  setInterval(load, 60000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+})();
+</script>
+</body>
+</html>
