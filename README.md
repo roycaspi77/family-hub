@@ -1,72 +1,88 @@
 # Family Hub
 
-This is the family's app for **tasks** (chores) and **fun** (dates, outings). It runs on Google Sheets and Apps Script, costs nothing, and needs no app-store install.
+This is the family's app for **tasks** (chores), **cards**, **good words**, **allowance** and **fun** (dates, outings). It runs on Google Sheets and Apps Script plus GitHub Pages, costs nothing, and needs no app-store install.
 
 A **rotation slot** is one person (`Noa`) or several people joined with `+` (`Dad+Noa`). For a group, everyone in it is notified.
 
+## Screens
+| Tab | What's there |
+|---|---|
+| 🧹 **Tasks** | Requests for you (Accept / Decline), my tasks, everyone else's, who's next in each rotation, history |
+| 🟨 **Cards** | Each member's current yellow and total reds, and every card with its explanation |
+| 🎉 **Fun Stuff** | Coming dates, good words (with prizes), allowance |
+| ⚙️ **Admin** | Admins only: extra-time requests, give cards / good words, tasks, fun, family, links |
+
 ## Tasks 🧹
-**Fields:** name and rotation order (e.g. `Noa, Yuval, Yael`).
+- **Rotating tasks** have a name, a rotation order (e.g. `Noa, Yuval, Yael`) and **reminders**. An admin taps **Assign to &lt;next person&gt;** and sets the due time (default 21:00 today). The member gets an email and a calendar invite.
+- **One-time tasks:** an admin sets a name, a member, a due time and reminders. There's no rotation.
+- **Reminders (per task):** one or more of:
+  - *N minutes/hours before*, e.g. 30 minutes before
+  - *N days before at HH:MM*, e.g. the day before at 19:00
 
-1. **Assign:** whenever they want, an admin taps **Assign to &lt;next person&gt;** in the Admin tab and sets the due date and time. The default is 21:00 today, or tomorrow if it's already past 21:00. The member gets an **email** and a **calendar invite** with a 2-hour reminder.
-2. **Start → Done:** the member taps **▶ Start** when they begin and **✓ Done** when they finish. Done is only available after Start.
-3. **Reminder:** 2 hours before the due time, the member also gets a message. Google Calendar doesn't pass the organizer's reminder on to invited guests, so this message is the reminder that reliably reaches them.
-4. **🟨 Yellow card:** if the task isn't done by the due time, the member gets a yellow card and 2 more hours.
-5. **🟥 Red card:** if it's still not done after those 2 hours, the member gets a red card and an **extra turn** at the front of the next rotation. The task is closed as missed.
-6. **⏳ Extra time:** the member can ask for more time, with an optional reason. The admins get an email, and the request appears at the top of the Admin tab (with a badge on the tab). An admin can **Refuse** it or **Add N hours** to the due time. If the due time has already passed, the hours are added from now instead.
-   - If the member asked *before* getting a yellow card and the admin grants time after the card was given, the yellow card is withdrawn.
-7. **Who is notified:** card notifications go only to the member and the admins. The card counts are visible to everyone on the **Schedule** tab, and cards also show on the task itself and in History.
+  Each reminder is sent once. Reminders whose time has already passed when the task is assigned are skipped. Changes to a task's reminders apply from its next assignment.
+- **Start → Done:** the member taps **▶ Start** when they begin and **✓ Done** when they finish.
+- **Overdue:** if a task isn't done by its due time, the member and the admins get one *overdue* message. Cards are **not** automatic; the admins decide.
+- **⏳ Extra time:** the member asks, the admins get the request in the Admin tab, and can **Refuse** or **Add N hours**.
+- **Pass to…:** before starting, the member can ask another member to take the task. The other member gets a request and can **Accept** or **Decline**.
+- **Switch with…:** the same, but as a trade. *"You do my turn now, I do your next turn in this task."* After it's accepted, "Who's next" shows the owed turn with 🔄. Not available for one-time tasks.
+- Admins can also **reassign** an open task or change its due time, or **excuse** it.
 
-Admins can also **reassign** an open task or change its due time, or **excuse** it (closes it with no card).
+## Cards 🟨🟥
+- An admin gives a **yellow card** to a member, with an explanation everyone can see, and optionally a related task.
+- A yellow card stays until the member gets a **second** one. The two then become a **red card**, and the admin picks the task in which the member gets an **extra turn**. They're put at the front of that task's queue, shown with 🟥 in "Who's next".
+- Card messages go to the member and the admins.
+
+## Good words 🌟
+- An admin gives a good word with an explanation everyone can see.
+- Every **3rd** good word comes with a **prize** the admin chooses when giving it. It's shown with the good word and sent to the member.
+
+## Allowance 💰
+- An admin sets each member's monthly amount in **Admin → Edit member**.
+- Each member sees their next two paydays: the 1st of the coming months. Admins see everyone's.
 
 ## Fun 🎉
-**Fields:** name, rotation order (e.g. `Dad+Noa, Mom+Yuval, Dad+Yael, Mom+Noa, Dad+Yuval, Mom+Yael`), repeat every (days), and the coming event's time and place.
-
-- There's always one **coming event**. Whenever they want, an admin can use **Update time & place** to change it, including who it's for. The people in that slot get an email and an updated calendar invite.
-- Two hours after the event starts it counts as done. The next event is created automatically for the next slot in the rotation, *repeat every* days after the last one, at the same place by default.
-- **Cancel this one** skips the current event and moves to the next slot. Fun activities never get cards.
-
-## Screens
-**My turns** (your tasks with Start / Done / Extra time, and your coming fun events) · **Schedule** (card counts, who's on now, who's next) · **History** · **Board** (shared notes) · **Admin** (admins only).
+- **Fields:** name, rotation (e.g. `Dad+Noa, Mom+Yuval`), repeat every N days, and the coming event's time and place.
+- An admin can **Update time & place** at any time. The people in that slot get an email and an updated calendar invite.
+- Two hours after the event starts it counts as done, and the next event is created for the next slot. **Cancel this one** skips to the next slot.
 
 ## How it's built
-- **`docs/`:** the screens, a static web app hosted on **GitHub Pages** (`https://<user>.github.io/family-hub/`). This is what the phones open.
-- **`apps-script/`:** the backend, a Google Apps Script bound to the Google Sheet. It stores the data, sends the emails and calendar invites, and runs the 15-minute check. The page talks to it as a JSON API.
+- **`docs/`:** the screens, a static web app on **GitHub Pages** (`https://roycaspi77.github.io/family-hub/`).
+- **`apps-script/`:** the backend, a Google Apps Script bound to the Google Sheet. It stores the data, sends emails and calendar invites, and checks reminders every 5 minutes. The page talks to it as a JSON API (`docs/config.js` holds its `/exec` URL).
 
-Personal links look like `https://<user>.github.io/family-hub/#u=<token>`. The token goes after `#`, so it is never sent to GitHub. The phone also remembers it, so the home-screen icon keeps working.
+Personal links look like `https://roycaspi77.github.io/family-hub/#u=<token>`. The token goes after `#`, so it is never sent to GitHub. The phone also remembers it, so the home-screen icon keeps working.
 
-## Setup (about 15 minutes, on a computer)
-1. Create a new Google Sheet, for example "Family Hub".
-2. **Extensions → Apps Script.** In the editor:
-   - Replace the contents of `Code.gs` with `apps-script/Code.gs`. Then set `APP_URL` near the top to your GitHub Pages address.
-   - **Project Settings → "Show appsscript.json"**, then paste in `apps-script/appsscript.json`. It sets the time zone to Asia/Jerusalem.
-   - If an `Index.html` file is left over from the earlier version, delete it.
-3. Select the `setup` function and click **Run**. Approve the permissions (Sheets, Calendar, send email, external requests, triggers). This creates the sheets, the "Family Hub" calendar, the 15-minute check and an `Admin` user.
-4. In the **Users** sheet, rename `Admin` to your own name (do this before creating any activities).
-5. **Deploy → New deployment → Web app.** Set *Execute as: Me* and *Who has access: Anyone*, then Deploy. Copy the **Web app URL** (it ends in `/exec`).
-6. On GitHub, edit `docs/config.js` and paste that URL into `FAMILY_HUB_API`. GitHub Pages updates within a minute.
-7. Run `printLinks`, then look in the Execution log. Open your own link on your phone.
-8. In the app's **Admin** tab: add your wife as an admin, add the kids as members (each with an email, and with **Email** and **Calendar** ticked), then create tasks and fun activities. After that, **Personal links → Send via WhatsApp** to send each person their link.
-9. On each phone, open the link and choose **Add to Home Screen** (Chrome menu on Android, Share menu on iPhone). It installs as an app with its own icon.
+## Upgrading to this version (from the earlier one)
+1. Open your Google Sheet → **Extensions → Apps Script**.
+2. Replace all of `Code.gs` with [`apps-script/Code.gs`](apps-script/Code.gs), then **Save** (Ctrl+S).
+3. Choose the **`setup`** function in the toolbar and click **Run**. It is safe to run again:
+   - It adds the new sheets (`Cards`, `GoodWords`) and the new columns, and keeps all existing data.
+   - It switches the automatic check to every 5 minutes.
+   - If Google asks for permissions again, approve them.
+4. **Deploy → Manage deployments → ✏️ Edit → Version: *New version* → Deploy.** The URL stays the same, so `config.js` doesn't change.
+5. In the app: set each member's **allowance** (Admin → Edit), and open each task's **Edit** to set its reminders (they start at "2 hours before").
 
-> **After changing `Code.gs`:** go to **Deploy → Manage deployments → Edit → Version: New version → Deploy**. This keeps the same `/exec` URL, so `config.js` doesn't need to change.
+The screens update by themselves from GitHub. Phones that already have the app open may need a refresh, or up to 10 minutes.
 
-> **Upgrading from an earlier version:** the columns changed. Delete the `Activities` and `Turns` sheets (and `Chores` / `Tasks` if they're there), then run `setup` again. `Users` and `Board` are kept.
+Old yellow/red cards from the earlier version were stored on tasks. They aren't carried into the new Cards tab, which starts empty.
 
-### If a phone still blocks it
-Parental controls (Google Family Link, or Screen Time on iPhone) may block new sites. Approve `<user>.github.io` there:
-- **Family Link:** Controls → Content restrictions → Google Chrome → Manage sites → Approved.
+## First-time setup (new Sheet)
+1. Create a Google Sheet → **Extensions → Apps Script**. Paste `apps-script/Code.gs` into `Code.gs` (check that `APP_URL` is your GitHub Pages address). In **Project Settings → Show "appsscript.json"**, paste in `apps-script/appsscript.json`.
+2. Run **`setup`** and approve the permissions. In the **Users** sheet, rename `Admin` to your name.
+3. **Deploy → New deployment → Web app**, with *Execute as: Me* and *Who has access: Anyone*. Put the `/exec` URL in `docs/config.js`.
+4. Run **`printLinks`**, open your link, then add the family in **Admin** and send each person their link (**Personal links → Send via WhatsApp**).
+5. On each phone: open the link → **Add to Home Screen**.
 
-The page also has to reach `script.google.com` in the background, so approve that site too if calls fail.
+### If a phone blocks it
+Approve `roycaspi77.github.io` in the parental controls (Family Link: Controls → Content restrictions → Google Chrome → Manage sites → Approved). Approve `script.google.com` too if the app opens but says "No connection to the server".
 
 ### WhatsApp (optional)
-Notifications go by email by default. To also send them over WhatsApp through [CallMeBot](https://www.callmebot.com/blog/free-api-whatsapp-messages/), a free third-party service:
-1. On the member's phone, add the CallMeBot number (listed on the page linked above) to contacts.
+To also send notifications over WhatsApp through [CallMeBot](https://www.callmebot.com/blog/free-api-whatsapp-messages/), a free third-party service:
+1. On the member's phone, add the CallMeBot number (listed on that page) to contacts.
 2. Send it `I allow callmebot to send me messages`.
-3. Enter the phone number and the API key you receive in **Admin → Edit member**, and tick **WhatsApp**.
+3. Enter the phone number (`+9725…`) and the API key you receive in **Admin → Edit member**, and tick **WhatsApp**.
 
 ## Notes
 - **Each personal link works like a password.** If one leaks, replace that user's `token` cell in the Users sheet with a new random string and send them the new link.
-- **Timing:** the check runs every 15 minutes, so a yellow or red card can arrive up to 15 minutes after the deadline. **Run check now** in the Admin tab runs it immediately.
-- **The fixed rules** (2-hour grace, 2-hour reminder, fun events lasting 2 hours) are constants at the top of `Code.gs`.
-- **Admins need email turned on**, because extra-time requests reach them through their notification settings.
-- **Quotas:** Gmail allows about 100 emails a day from a free account, which is plenty for 5 people.
+- **Timing:** reminders are checked every 5 minutes. **Run check now** in the Admin tab runs the check immediately.
+- **Member names** are used as keys and can't contain `,` `+` or `>`.
+- **Quotas:** Gmail allows about 100 emails a day from a free account, which is plenty for one family.

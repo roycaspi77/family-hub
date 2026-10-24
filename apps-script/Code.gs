@@ -1,21 +1,29 @@
 /**
  * Family Hub — Google Apps Script backend, bound to a Google Sheet.
  *
- * Two kinds of activity, both with a rotation of family members:
+ * Activities rotate between family members:
  *   task — chores. An admin assigns the next person in the queue with a due
- *          time. The member presses Start, then Done. Late → yellow card and a
- *          2-hour grace; still not done → red card and an extra turn.
+ *          time (or creates a one-time task). The member presses Start, then
+ *          Done. Each task has its own reminder rules. Members can pass a turn
+ *          to someone else, or switch (you do mine now, I do your next one).
  *   fun  — recurring events (e.g. a 1-on-1 date). Each turn is a coming event
  *          with a time and place; after it passes, the next slot gets the next
  *          event, "repeat every" days later.
  *
+ * Admins also give yellow cards (the 2nd unused yellow becomes a red card,
+ * which gives the member an extra turn in a task the admin picks) and good
+ * words (every 3rd one comes with a prize). Each member has a monthly
+ * allowance, paid on the 1st.
+ *
  * A rotation slot is a single name ("Noa") or a group joined with "+" ("Dad+Noa").
  *
- * Sheets (created by setup()):
- *   Users      — family members, personal link token, role, notification prefs
+ * Sheets (created / upgraded by setup()):
+ *   Users      — family members, personal link token, role, notification prefs, allowance
  *   Activities — tasks and fun activities with their rotation state
  *   Turns      — every assignment / event and its outcome
- *   Board      — shared notes everyone can post
+ *   Cards      — yellow and red cards
+ *   GoodWords  — good words and prizes
+ *   Board      — notes from older versions (no longer shown)
  *
  * Access model: this script is only the backend (a JSON API). The screens are
  * a static page on GitHub Pages (APP_URL) that POSTs to this web app. Each
@@ -28,26 +36,32 @@ const APP_NAME = 'Family Hub';
 const APP_URL = 'https://roycaspi77.github.io/family-hub/';
 const TZ = Session.getScriptTimeZone();
 
-const GRACE_HOURS = 2;       // after the due time, between yellow and red card
-const REMINDER_HOURS = 2;    // task reminder before the due time
 const FUN_EVENT_HOURS = 2;   // fun events count as over this long after they start
+const GOOD_WORDS_PER_PRIZE = 3;
+const DEFAULT_RULES = [{ kind: 'before', minutes: 120 }];
+const MAX_RULES = 5;
 
 const OPEN_STATUSES = ['assigned', 'in_progress', 'upcoming'];
 
 const HEADERS = {
   Users: ['token', 'name', 'email', 'phone', 'role', 'whatsapp_apikey',
-          'notify_email', 'notify_calendar', 'notify_whatsapp'],
+          'notify_email', 'notify_calendar', 'notify_whatsapp', 'allowance'],
   Activities: ['id', 'type', 'name', 'rotation', 'current_index', 'penalty_queue',
-               'frequency_days', 'next_due', 'place', 'active'],
+               'frequency_days', 'next_due', 'place', 'active', 'notify_rules',
+               'swap_queue'],
   Turns: ['id', 'activity_id', 'type', 'title', 'assignee', 'due_at', 'place',
           'status', 'card', 'yellow_at', 'started_at', 'completed_at',
           'completed_by', 'extra_request', 'extra_requested_at', 'extra_reason',
-          'reminder_sent', 'calendar_event_id', 'note'],
+          'reminder_sent', 'calendar_event_id', 'note', 'notify_rules',
+          'reminders_sent', 'overdue_sent', 'offer_to', 'offer_kind', 'offer_by'],
+  Cards: ['id', 'member', 'color', 'explanation', 'task_id', 'red_task_id',
+          'used', 'created_at', 'by'],
+  GoodWords: ['id', 'member', 'explanation', 'prize', 'created_at', 'by'],
   Board: ['id', 'created_at', 'author', 'text'],
 };
 
 // ============================================================================
-// Setup (run once from the Apps Script editor)
+// Setup / upgrade (run from the Apps Script editor; safe to run again)
 // ============================================================================
 
 function setup() {
@@ -57,6 +71,13 @@ function setup() {
     if (sh.getLastRow() === 0) {
       sh.appendRow(HEADERS[name]);
       sh.setFrozenRows(1);
+      return;
+    }
+    // Upgrade: add any new columns at the end, keeping existing data.
+    const existing = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    const missing = HEADERS[name].filter(h => existing.indexOf(h) < 0);
+    if (missing.length) {
+      sh.getRange(1, existing.length + 1, 1, missing.length).setValues([missing]);
     }
   });
 
@@ -70,16 +91,17 @@ function setup() {
     writeRow_('Users', {
       token: newToken_(), name: 'Admin',
       email: Session.getEffectiveUser().getEmail(), role: 'admin',
-      notify_email: true, notify_calendar: true, notify_whatsapp: false,
+      notify_email: true, notify_calendar: true, notify_whatsapp: false, allowance: 0,
     });
   }
 
   ScriptApp.getProjectTriggers()
     .filter(t => t.getHandlerFunction() === 'tick')
     .forEach(t => ScriptApp.deleteTrigger(t));
-  ScriptApp.newTrigger('tick').timeBased().everyMinutes(15).create();
+  // Every 5 minutes so a "30 minutes before" reminder goes out on time.
+  ScriptApp.newTrigger('tick').timeBased().everyMinutes(5).create();
 
-  Logger.log('Setup done. Next: Deploy > New deployment > Web app, then run printLinks().');
+  Logger.log('Setup done. Next: Deploy > Manage deployments > Edit > New version.');
 }
 
 /** Logs every member's personal link. */
@@ -94,9 +116,10 @@ function printLinks() {
 // Only these functions can be called from the page; every one takes the
 // caller's token as its first argument.
 const API = {
-  getState, startTurn, completeTurn, requestExtraTime, postNote, deleteNote,
-  adminSaveActivity, adminAssignTask, adminEditTurn, adminAnswerExtraTime,
-  adminExcuseTurn, adminSaveUser, adminGetLinks, adminRunCheck,
+  getState, startTurn, completeTurn, requestExtraTime, offerTurn, answerOffer,
+  adminSaveActivity, adminAssignTask, adminCreateOneTimeTask, adminEditTurn,
+  adminAnswerExtraTime, adminExcuseTurn, adminGiveCard, adminGiveGoodWord,
+  adminSaveUser, adminGetLinks, adminRunCheck,
 };
 
 /** The page sends text/plain JSON {fn, args} so the browser skips a CORS preflight. */
@@ -124,36 +147,59 @@ function getState(token) {
   const admin = isAdmin_(me);
   const turns = readAll_('Turns');
   const open = turns.filter(isOpen_);
-  const activities = readAll_('Activities').filter(a => admin || bool_(a.active));
+  const allActivities = readAll_('Activities');
+  const activityName = id => {
+    const a = allActivities.find(x => x.id === id);
+    return a ? a.name : '';
+  };
+  const cards = readAll_('Cards');
+  const goodWords = readAll_('GoodWords');
 
   return {
     me: { name: me.name, role: me.role, isAdmin: admin },
-    config: { graceHours: GRACE_HOURS },
     users: users_().map(u => admin ? {
       name: u.name, role: u.role, email: u.email, phone: String(u.phone || ''),
       notify_email: bool_(u.notify_email), notify_calendar: bool_(u.notify_calendar),
       notify_whatsapp: bool_(u.notify_whatsapp), has_whatsapp_key: !!u.whatsapp_apikey,
+      allowance: Number(u.allowance) || 0,
     } : { name: u.name, role: u.role }),
-    activities: activities.map(a => ({
+    activities: allActivities.filter(a => admin || bool_(a.active)).map(a => ({
       id: a.id, type: a.type, name: a.name, active: bool_(a.active),
       rotation: list_(a.rotation).join(', '),
       frequency_days: Number(a.frequency_days) || 0,
+      notify_rules: rulesOf_(a.notify_rules),
       open: open.filter(t => t.activity_id === a.id).map(turnView_),
       upcoming: upcoming_(a, 5),
     })),
-    cards: users_().map(u => {
-      const mine = turns.filter(t => members_(t.assignee).indexOf(u.name) >= 0);
-      return { name: u.name,
-               yellow: mine.filter(t => t.card === 'yellow').length,
-               red: mine.filter(t => t.card === 'red').length };
-    }),
     open: open.map(turnView_),
+    offers: open.filter(t => t.offer_to === me.name).map(turnView_),
     history: turns.filter(t => !isOpen_(t))
       .sort((a, b) => (ms_(b.completed_at) || ms_(b.due_at)) - (ms_(a.completed_at) || ms_(a.due_at)))
-      .slice(0, 60).map(turnView_),
-    board: readAll_('Board').slice(-40).reverse().map(n => ({
-      id: n.id, author: n.author, text: String(n.text), created_at: ms_(n.created_at),
-    })),
+      .slice(0, 40).map(turnView_),
+    cards: {
+      list: cards.slice().reverse().slice(0, 100).map(c => ({
+        id: c.id, member: c.member, color: c.color, explanation: String(c.explanation || ''),
+        task: activityName(c.task_id), red_task: activityName(c.red_task_id),
+        used: bool_(c.used), created_at: ms_(c.created_at), by: c.by,
+      })),
+      summary: users_().map(u => ({
+        name: u.name,
+        yellow: cards.filter(c => c.member === u.name && c.color === 'yellow' && !bool_(c.used)).length,
+        red: cards.filter(c => c.member === u.name && c.color === 'red').length,
+      })),
+    },
+    goodWords: {
+      list: goodWords.slice().reverse().slice(0, 100).map(g => ({
+        id: g.id, member: g.member, explanation: String(g.explanation || ''),
+        prize: String(g.prize || ''), created_at: ms_(g.created_at), by: g.by,
+      })),
+      summary: users_().map(u => ({
+        name: u.name, count: goodWords.filter(g => g.member === u.name).length,
+      })),
+      perPrize: GOOD_WORDS_PER_PRIZE,
+    },
+    allowance: users_().filter(u => admin || u.name === me.name)
+      .map(u => ({ name: u.name, amount: Number(u.allowance) || 0 })),
   };
 }
 
@@ -164,6 +210,7 @@ function startTurn(token, turnId) {
     const turn = openTask_(turnId);
     requireParticipant_(me, turn);
     if (turn.status !== 'assigned') throw new Error('This task was already started.');
+    if (turn.offer_to) throw new Error(`Waiting for ${turn.offer_to} to answer the pass / switch request.`);
     turn.status = 'in_progress';
     turn.started_at = new Date();
     writeRow_('Turns', turn);
@@ -203,23 +250,77 @@ function requestExtraTime(token, turnId, reason) {
   });
 }
 
-function postNote(token, text) {
+/**
+ * Ask another member to take this turn.
+ *   pass   — they take it, nothing in return.
+ *   switch — they take it now; the asker takes their next turn in the same task.
+ */
+function offerTurn(token, turnId, toName, kind) {
   return withLock_(() => {
     const me = auth_(token);
-    const body = clean_(text, 500);
-    if (!body) throw new Error('Note is empty.');
-    writeRow_('Board', { id: uid_(), created_at: new Date(), author: me.name, text: body });
+    const turn = openTask_(turnId);
+    if (members_(turn.assignee).indexOf(me.name) < 0) throw new Error('This is not your task.');
+    if (turn.status !== 'assigned') throw new Error('You can only pass a task before starting it.');
+    if (turn.offer_to) throw new Error(`Already waiting for ${turn.offer_to} to answer.`);
+    if (kind !== 'pass' && kind !== 'switch') throw new Error('Unknown request.');
+    if (kind === 'switch' && !turn.activity_id) throw new Error('One-time tasks can only be passed, not switched.');
+    const target = userByName_(toName);
+    if (!target || target.name === me.name) throw new Error('Pick another family member.');
+    if (members_(turn.assignee).indexOf(target.name) >= 0) throw new Error(`${target.name} is already on this task.`);
+
+    turn.offer_to = target.name;
+    turn.offer_kind = kind;
+    turn.offer_by = me.name;
+    writeRow_('Turns', turn);
+    notifyUser_(target.name, `🔄 ${me.name} asks you to take "${turn.title}"`,
+                `${me.name} asks you to do "${turn.title}" (due ${fmt_(turn.due_at)}).`
+                + (kind === 'switch' ? `\nIn return, ${me.name} will do your next "${turn.title}" turn.` : '')
+                + '\n\nAccept or decline in the Tasks tab.');
     return getState(token);
   });
 }
 
-function deleteNote(token, noteId) {
+/** The asked member accepts / declines; the asker can also withdraw (accept = false). */
+function answerOffer(token, turnId, accept) {
   return withLock_(() => {
     const me = auth_(token);
-    const note = readAll_('Board').find(n => n.id === noteId);
-    if (!note) throw new Error('Note not found.');
-    if (note.author !== me.name && !isAdmin_(me)) throw new Error('You can only delete your own notes.');
-    sheet_('Board').deleteRow(note._row);
+    const turn = openTask_(turnId);
+    if (!turn.offer_to) throw new Error('There is no pending request on this task.');
+    const asker = turn.offer_by;
+    const target = turn.offer_to;
+    const kind = turn.offer_kind;
+
+    if (me.name === asker) {
+      clearOffer_(turn);
+      writeRow_('Turns', turn);
+      notifyUser_(target, `🔄 Request withdrawn: ${turn.title}`,
+                  `${asker} withdrew the request about "${turn.title}".`);
+      return getState(token);
+    }
+    if (target !== me.name) throw new Error('This request is not for you.');
+    clearOffer_(turn);
+    if (!accept) {
+      writeRow_('Turns', turn);
+      notifyUser_(asker, `🔄 ${me.name} declined: ${turn.title}`,
+                  `${me.name} declined to take "${turn.title}". It is still yours, due ${fmt_(turn.due_at)}.`);
+      return getState(token);
+    }
+
+    turn.assignee = members_(turn.assignee).map(n => n === asker ? me.name : n).join('+');
+    initReminders_(turn);
+    turn.overdue_sent = false;
+    refreshCalendar_(turn);
+    writeRow_('Turns', turn);
+    if (kind === 'switch') {
+      const activity = readAll_('Activities').find(a => a.id === turn.activity_id);
+      if (activity) {
+        activity.swap_queue = list_(activity.swap_queue).concat([`${me.name}>${asker}`]).join(',');
+        writeRow_('Activities', activity);
+      }
+    }
+    notifyUser_(asker, `🔄 ${me.name} accepted: ${turn.title}`,
+                `${me.name} will do "${turn.title}" (due ${fmt_(turn.due_at)}).`
+                + (kind === 'switch' ? `\nYou will do ${me.name}'s next "${turn.title}" turn.` : ''));
     return getState(token);
   });
 }
@@ -239,7 +340,7 @@ function adminSaveActivity(token, input) {
     const isNew = !activity;
     if (isNew) {
       if (input.type !== 'task' && input.type !== 'fun') throw new Error('Unknown activity type.');
-      activity = { id: uid_(), type: input.type, current_index: 0, penalty_queue: '' };
+      activity = { id: uid_(), type: input.type, current_index: 0, penalty_queue: '', swap_queue: '' };
       if (activity.type === 'fun') {
         if (!input.first_at) throw new Error('Set the time of the first event.');
         activity.next_due = new Date(Number(input.first_at));
@@ -251,6 +352,7 @@ function adminSaveActivity(token, input) {
     activity.rotation = rotation.join(',');
     activity.current_index = (Number(activity.current_index) || 0) % rotation.length;
     if (activity.type === 'fun') activity.frequency_days = int_(input.frequency_days, 1, 365, 7);
+    if (activity.type === 'task') activity.notify_rules = JSON.stringify(parseRules_(input.notify_rules));
     activity.active = input.active !== false;
     writeRow_('Activities', activity);
 
@@ -265,27 +367,30 @@ function adminSaveActivity(token, input) {
   });
 }
 
-/** Assign a task to the next slot in the queue. */
+/** Assign a rotating task to the next slot in the queue. */
 function adminAssignTask(token, activityId, dueMs) {
   return withLock_(() => {
     requireAdmin_(auth_(token));
     const activity = readAll_('Activities').find(a => a.id === activityId);
     if (!activity || activity.type !== 'task' || !bool_(activity.active)) throw new Error('Task not found.');
-    const due = new Date(Number(dueMs));
-    if (isNaN(due.getTime()) || due.getTime() <= Date.now()) throw new Error('The due time must be in the future.');
-
+    const due = futureDate_(dueMs);
     const assignee = consumeAssignee_(activity);
     writeRow_('Activities', activity);
-    const turn = {
-      id: uid_(), activity_id: activity.id, type: 'task', title: activity.name,
-      assignee: assignee, due_at: due, status: 'assigned', card: '',
-      extra_request: '', reminder_sent: false,
-    };
-    turn.calendar_event_id = addCalendar_(turn);
-    writeRow_('Turns', turn);
-    notify_(assignee, `🧹 New task: ${turn.title}`,
-            `${display_(assignee)}: you've been assigned "${turn.title}". Due: ${fmt_(due)}.\n`
-            + 'Press Start when you begin and Done when you finish.');
+    createTaskTurn_({ activity_id: activity.id, title: activity.name, assignee: assignee,
+                      due_at: due, rules: rulesOf_(activity.notify_rules) });
+    return getState(token);
+  });
+}
+
+function adminCreateOneTimeTask(token, input) {
+  return withLock_(() => {
+    requireAdmin_(auth_(token));
+    const title = clean_(input.title, 60);
+    if (!title) throw new Error('Task name is required.');
+    const assignee = normalizeSlot_(input.assignee);
+    validateSlot_(assignee);
+    createTaskTurn_({ activity_id: '', title: title, assignee: assignee,
+                      due_at: futureDate_(input.due_at), rules: parseRules_(input.notify_rules) });
     return getState(token);
   });
 }
@@ -299,15 +404,17 @@ function adminEditTurn(token, turnId, changes) {
     if (changes.assignee) {
       const slot = normalizeSlot_(changes.assignee);
       validateSlot_(slot);
+      if (slot !== turn.assignee) clearOffer_(turn);
       turn.assignee = slot;
     }
     if (changes.due_at) {
       const due = new Date(Number(changes.due_at));
       if (isNaN(due.getTime())) throw new Error('Invalid date.');
       turn.due_at = due;
-      turn.reminder_sent = false;
+      turn.overdue_sent = false;
     }
     if (turn.type === 'fun' && changes.place !== undefined) turn.place = clean_(changes.place, 100);
+    if (turn.type === 'task') initReminders_(turn);
     refreshCalendar_(turn);
     writeRow_('Turns', turn);
 
@@ -339,15 +446,10 @@ function adminAnswerExtraTime(token, turnId, hours) {
     } else {
       // Extend from the due time, or from now if that has already passed.
       const base = Math.max(new Date(turn.due_at).getTime(), Date.now());
-      // A yellow card given while the request was still waiting is withdrawn.
-      if (turn.card === 'yellow' && turn.yellow_at instanceof Date &&
-          turn.extra_requested_at instanceof Date && turn.extra_requested_at < turn.yellow_at) {
-        turn.card = '';
-        turn.yellow_at = '';
-      }
       turn.due_at = new Date(base + hours_(add));
       turn.extra_request = 'granted';
-      turn.reminder_sent = false;
+      turn.overdue_sent = false;
+      initReminders_(turn);
       refreshCalendar_(turn);
       writeRow_('Turns', turn);
       notify_(turn.assignee, `⏳ Extra time granted: ${turn.title}`,
@@ -357,7 +459,7 @@ function adminAnswerExtraTime(token, turnId, hours) {
   });
 }
 
-/** Task: close without a card. Fun: cancel this event and move to the next slot. */
+/** Task: close without doing it. Fun: cancel this event and move to the next slot. */
 function adminExcuseTurn(token, turnId) {
   return withLock_(() => {
     const me = auth_(token);
@@ -370,6 +472,82 @@ function adminExcuseTurn(token, turnId) {
   });
 }
 
+/**
+ * Give a yellow card. If the member already has an unused yellow, both turn
+ * into a red card, and red_task_id (required then) gets the member as its next
+ * assignee.
+ */
+function adminGiveCard(token, input) {
+  return withLock_(() => {
+    const me = auth_(token);
+    requireAdmin_(me);
+    const member = userByName_(input.member);
+    if (!member) throw new Error('Pick a family member.');
+    const explanation = clean_(input.explanation, 300);
+    if (!explanation) throw new Error('Write why the card is given.');
+    const activities = readAll_('Activities');
+    const related = input.task_id ? activities.find(a => a.id === input.task_id) : null;
+
+    const activeYellows = readAll_('Cards')
+      .filter(c => c.member === member.name && c.color === 'yellow' && !bool_(c.used));
+    const yellow = {
+      id: uid_(), member: member.name, color: 'yellow', explanation: explanation,
+      task_id: related ? related.id : '', red_task_id: '', used: false,
+      created_at: new Date(), by: me.name,
+    };
+
+    if (!activeYellows.length) {
+      writeRow_('Cards', yellow);
+      notifyWithAdmins_(member.name, `🟨 Yellow card for ${member.name}`,
+                        `${member.name} got a yellow card from ${me.name}.\nWhy: ${explanation}\n`
+                        + 'A second yellow card becomes a red card.');
+      return getState(token);
+    }
+
+    const redTask = activities.find(a => a.id === input.red_task_id && a.type === 'task' && bool_(a.active));
+    if (!redTask) throw new Error('This is the 2nd yellow card: pick the task for the extra turn.');
+    yellow.used = true;
+    writeRow_('Cards', yellow);
+    activeYellows.forEach(c => { c.used = true; writeRow_('Cards', c); });
+    writeRow_('Cards', {
+      id: uid_(), member: member.name, color: 'red', explanation: explanation,
+      task_id: yellow.task_id, red_task_id: redTask.id, used: false,
+      created_at: new Date(), by: me.name,
+    });
+    redTask.penalty_queue = [member.name].concat(list_(redTask.penalty_queue)).join(',');
+    writeRow_('Activities', redTask);
+    notifyWithAdmins_(member.name, `🟥 Red card for ${member.name}`,
+                      `${member.name} got a second yellow card from ${me.name}, which makes a red card.\n`
+                      + `Why: ${explanation}\nPenalty: an extra turn in "${redTask.name}".`);
+    return getState(token);
+  });
+}
+
+/** Every GOOD_WORDS_PER_PRIZE-th good word for a member must come with a prize. */
+function adminGiveGoodWord(token, input) {
+  return withLock_(() => {
+    const me = auth_(token);
+    requireAdmin_(me);
+    const member = userByName_(input.member);
+    if (!member) throw new Error('Pick a family member.');
+    const explanation = clean_(input.explanation, 300);
+    if (!explanation) throw new Error('Write what the good word is for.');
+    const count = readAll_('GoodWords').filter(g => g.member === member.name).length + 1;
+    const earnsPrize = count % GOOD_WORDS_PER_PRIZE === 0;
+    const prize = earnsPrize ? clean_(input.prize, 100) : '';
+    if (earnsPrize && !prize) throw new Error(`This is good word #${count}: choose the prize.`);
+
+    writeRow_('GoodWords', {
+      id: uid_(), member: member.name, explanation: explanation, prize: prize,
+      created_at: new Date(), by: me.name,
+    });
+    notifyUser_(member.name, `🌟 Good word for ${member.name}!`,
+                `${me.name}: ${explanation}`
+                + (prize ? `\n\n🎁 That's ${count} good words — your prize: ${prize}` : ''));
+    return getState(token);
+  });
+}
+
 function adminSaveUser(token, input) {
   return withLock_(() => {
     requireAdmin_(auth_(token));
@@ -378,7 +556,7 @@ function adminSaveUser(token, input) {
     if (!user) {
       // Names are the key used in rotations, so they are fixed once created.
       const name = clean_(input.name, 30);
-      if (!name || /[,+]/.test(name)) throw new Error('Name is required and cannot contain "," or "+".');
+      if (!name || /[,+>]/.test(name)) throw new Error('Name is required and cannot contain ",", "+" or ">".');
       if (all.some(u => u.name === name)) throw new Error('That name already exists.');
       user = { token: newToken_(), name: name };
     }
@@ -388,6 +566,7 @@ function adminSaveUser(token, input) {
     user.notify_email = !!input.notify_email;
     user.notify_calendar = !!input.notify_calendar;
     user.notify_whatsapp = !!input.notify_whatsapp;
+    user.allowance = Math.max(0, Math.min(100000, Number(input.allowance) || 0));
     if (input.whatsapp_apikey) user.whatsapp_apikey = clean_(input.whatsapp_apikey, 40);
     writeRow_('Users', user);
     usersCache_ = null;
@@ -407,7 +586,7 @@ function adminRunCheck(token) {
 }
 
 // ============================================================================
-// Scheduler (time-driven trigger every 15 minutes)
+// Scheduler (time-driven trigger every 5 minutes)
 // ============================================================================
 
 function tick() {
@@ -422,7 +601,7 @@ function tick() {
           closeTurn_(turn, 'done', '', '');
         }
       } else {
-        checkTaskDeadline_(turn, activities.find(a => a.id === turn.activity_id), now);
+        checkTaskDeadline_(turn, now);
       }
     });
 
@@ -433,75 +612,148 @@ function tick() {
   });
 }
 
-function checkTaskDeadline_(turn, activity, now) {
+/** Sends each reminder rule once, then one overdue alert. No automatic cards. */
+function checkTaskDeadline_(turn, now) {
   const due = new Date(turn.due_at).getTime();
-  const redAt = due + hours_(GRACE_HOURS);
   const who = display_(turn.assignee);
+  const sent = list_(turn.reminders_sent);
+  let changed = false;
 
-  // Guests on the family calendar don't get the event's own popup reminder,
-  // so the 2-hour reminder is also sent as a message.
-  if (!bool_(turn.reminder_sent) && now >= due - hours_(REMINDER_HOURS) && now < due) {
-    turn.reminder_sent = true;
-    writeRow_('Turns', turn);
-    notify_(turn.assignee, `🔔 Reminder: ${turn.title}`,
-            `${who}: "${turn.title}" is due ${fmt_(turn.due_at)}.`);
+  if (now < due) {
+    rulesOf_(turn.notify_rules).forEach((rule, i) => {
+      if (sent.indexOf(String(i)) >= 0 || now < fireTime_(rule, due)) return;
+      sent.push(String(i));
+      changed = true;
+      notify_(turn.assignee, `🔔 Reminder: ${turn.title}`,
+              `${who}: "${turn.title}" is due ${fmt_(turn.due_at)}.`);
+    });
   }
+  if (changed) turn.reminders_sent = sent.join(',');
 
-  if (!turn.card && now > due) {
-    turn.card = 'yellow';
-    turn.yellow_at = new Date();
-    writeRow_('Turns', turn);
-    markCalendar_(turn, '🟨 ');
-    notifyWithAdmins_(turn, `🟨 Yellow card: ${turn.title} (${who})`,
-                      `${who} did not finish "${turn.title}" by ${fmt_(turn.due_at)}.\n`
-                      + `Grace: ${GRACE_HOURS} more hours, until ${fmt_(redAt)}. After that it's a red card and an extra turn.`);
+  if (!bool_(turn.overdue_sent) && now > due) {
+    turn.overdue_sent = true;
+    changed = true;
+    notifyWithAdmins_(turn.assignee, `⏰ Overdue: ${turn.title} (${who})`,
+                      `"${turn.title}" was due ${fmt_(turn.due_at)} and is not done yet (${who}).`);
   }
+  if (changed) writeRow_('Turns', turn);
+}
 
-  if (turn.card === 'yellow' && now > redAt) {
-    turn.card = 'red';
-    turn.status = 'missed';
-    turn.completed_at = new Date();
-    writeRow_('Turns', turn);
-    markCalendar_(turn, '🟥 ');
-    if (activity) {
-      activity.penalty_queue = [turn.assignee].concat(list_(activity.penalty_queue)).join(',');
-      writeRow_('Activities', activity);
+// ============================================================================
+// Reminder rules
+//   { kind: 'before', minutes: 30 }                    — 30 minutes before the due time
+//   { kind: 'daysBefore', days: 1, time: '19:00' }     — the day before at 19:00
+// ============================================================================
+
+function parseRules_(input) {
+  const rules = (Array.isArray(input) ? input : []).slice(0, MAX_RULES).map(r => {
+    if (r && r.kind === 'before') {
+      return { kind: 'before', minutes: int_(r.minutes, 1, 7 * 24 * 60, 120) };
     }
-    notifyWithAdmins_(turn, `🟥 Red card: ${turn.title} (${who})`,
-                      `${who} did not finish "${turn.title}" by the end of the grace period (${fmt_(redAt)}).\n`
-                      + `${who} gets an extra turn in the next rotation.`);
-  }
+    if (r && r.kind === 'daysBefore' && /^\d{1,2}:\d{2}$/.test(String(r.time))) {
+      const parts = String(r.time).split(':').map(Number);
+      if (parts[0] > 23 || parts[1] > 59) throw new Error('Invalid reminder time.');
+      return { kind: 'daysBefore', days: int_(r.days, 1, 14, 1), time: String(r.time).padStart(5, '0') };
+    }
+    throw new Error('Invalid reminder rule.');
+  });
+  return rules;
+}
+
+/** Stored rules (JSON text); missing ones fall back to the default. */
+function rulesOf_(text) {
+  if (text === '' || text === undefined || text === null) return DEFAULT_RULES.slice();
+  try { return parseRules_(JSON.parse(text)); } catch (e) { return DEFAULT_RULES.slice(); }
+}
+
+function fireTime_(rule, dueMs) {
+  if (rule.kind === 'before') return dueMs - rule.minutes * 60000;
+  const d = new Date(dueMs);
+  const parts = rule.time.split(':').map(Number);
+  d.setDate(d.getDate() - rule.days);
+  d.setHours(parts[0], parts[1], 0, 0);
+  return d.getTime();
+}
+
+/** Rules whose time already passed count as sent, so a fresh turn doesn't get a burst of late reminders. */
+function initReminders_(turn) {
+  const now = Date.now();
+  const due = new Date(turn.due_at).getTime();
+  turn.reminders_sent = rulesOf_(turn.notify_rules)
+    .map((rule, i) => fireTime_(rule, due) <= now ? String(i) : null)
+    .filter(x => x !== null).join(',');
 }
 
 // ============================================================================
 // Rotation logic
 // ============================================================================
 
-/** Penalty turns jump the queue; otherwise walk the rotation in order. */
+/**
+ * Next slot: penalty turns (red cards) jump the queue; otherwise walk the
+ * rotation. A pending switch ("Yuval>Noa") then hands Yuval's turn to Noa once.
+ */
 function consumeAssignee_(activity) {
+  let slot;
   const queue = list_(activity.penalty_queue);
   if (queue.length) {
-    const slot = queue.shift();
+    slot = queue.shift();
     activity.penalty_queue = queue.join(',');
-    return slot;
+  } else {
+    const rotation = list_(activity.rotation);
+    if (!rotation.length) throw new Error(`"${activity.name}" has an empty rotation.`);
+    const index = (Number(activity.current_index) || 0) % rotation.length;
+    activity.current_index = (index + 1) % rotation.length;
+    slot = rotation[index];
   }
-  const rotation = list_(activity.rotation);
-  if (!rotation.length) throw new Error(`"${activity.name}" has an empty rotation.`);
-  const index = (Number(activity.current_index) || 0) % rotation.length;
-  activity.current_index = (index + 1) % rotation.length;
-  return rotation[index];
+  const swaps = list_(activity.swap_queue);
+  slot = applySwap_(slot, swaps);
+  activity.swap_queue = swaps.join(',');
+  return slot;
+}
+
+/** Replaces the first member of the slot that owes a switch; consumes that entry. */
+function applySwap_(slot, swaps) {
+  const names = members_(slot);
+  for (let i = 0; i < swaps.length; i++) {
+    const parts = swaps[i].split('>');
+    const at = names.indexOf(parts[0]);
+    if (at >= 0 && parts[1]) {
+      names[at] = parts[1];
+      swaps.splice(i, 1);
+      return names.join('+');
+    }
+  }
+  return slot;
 }
 
 function upcoming_(activity, count) {
   const queue = list_(activity.penalty_queue);
   const rotation = list_(activity.rotation);
+  const swaps = list_(activity.swap_queue);
   let index = Number(activity.current_index) || 0;
   const out = [];
   while (out.length < count && (queue.length || rotation.length)) {
-    if (queue.length) out.push({ name: queue.shift(), penalty: true });
-    else out.push({ name: rotation[index++ % rotation.length], penalty: false });
+    const penalty = queue.length > 0;
+    const slot = penalty ? queue.shift() : rotation[index++ % rotation.length];
+    const swapped = applySwap_(slot, swaps);
+    out.push({ name: swapped, penalty: penalty, switched: swapped !== slot });
   }
   return out;
+}
+
+function createTaskTurn_(fields) {
+  const turn = {
+    id: uid_(), activity_id: fields.activity_id, type: 'task', title: fields.title,
+    assignee: fields.assignee, due_at: fields.due_at, status: 'assigned', card: '',
+    extra_request: '', notify_rules: JSON.stringify(fields.rules), overdue_sent: false,
+  };
+  initReminders_(turn);
+  turn.calendar_event_id = addCalendar_(turn);
+  writeRow_('Turns', turn);
+  notify_(turn.assignee, `🧹 New task: ${turn.title}`,
+          `${display_(turn.assignee)}: you've been assigned "${turn.title}". Due: ${fmt_(turn.due_at)}.\n`
+          + 'Press Start when you begin and Done when you finish.');
+  return turn;
 }
 
 function startFunTurn_(activity) {
@@ -531,6 +783,7 @@ function closeTurn_(turn, status, byName, note) {
   turn.completed_at = new Date();
   turn.completed_by = byName;
   if (note) turn.note = note;
+  clearOffer_(turn);
   writeRow_('Turns', turn);
   markCalendar_(turn, { done: '✅ ', excused: '➖ ', cancelled: '🚫 ' }[status] || '');
 
@@ -543,6 +796,12 @@ function closeTurn_(turn, status, byName, note) {
       startFunTurn_(activity);
     }
   }
+}
+
+function clearOffer_(turn) {
+  turn.offer_to = '';
+  turn.offer_kind = '';
+  turn.offer_by = '';
 }
 
 function isOpen_(turn) { return OPEN_STATUSES.indexOf(turn.status) >= 0; }
@@ -559,6 +818,12 @@ function requireParticipant_(user, turn) {
   }
 }
 
+function futureDate_(ms) {
+  const due = new Date(Number(ms));
+  if (isNaN(due.getTime()) || due.getTime() <= Date.now()) throw new Error('The due time must be in the future.');
+  return due;
+}
+
 // ---------- Rotation slots ("Noa" or "Dad+Noa") ----------
 
 function members_(slot) { return String(slot || '').split('+').map(x => x.trim()).filter(Boolean); }
@@ -568,7 +833,7 @@ function display_(slot) { return members_(slot).join(' & '); }
 function validateSlot_(slot) {
   const names = users_().map(u => u.name);
   const unknown = members_(slot).filter(n => names.indexOf(n) < 0);
-  if (!members_(slot).length) throw new Error('Empty rotation slot.');
+  if (!members_(slot).length) throw new Error('Pick at least one family member.');
   if (unknown.length) throw new Error('Unknown names: ' + unknown.join(', '));
 }
 
@@ -581,9 +846,9 @@ function notify_(slot, subject, body) {
   members_(slot).forEach(name => notifyUser_(name, subject, body));
 }
 
-/** The assigned member(s) plus every admin, each only once. */
-function notifyWithAdmins_(turn, subject, body) {
-  const names = members_(turn.assignee);
+/** The slot's member(s) plus every admin, each only once. */
+function notifyWithAdmins_(slot, subject, body) {
+  const names = members_(slot);
   users_().filter(isAdmin_).forEach(u => { if (names.indexOf(u.name) < 0) names.push(u.name); });
   names.forEach(name => notifyUser_(name, subject, body));
 }
@@ -640,7 +905,13 @@ function addCalendar_(turn) {
     }
     const event = cal.createEvent(calendarTitle_(turn), start,
                                   new Date(start.getTime() + minutes * 60000), options);
-    event.addPopupReminder(REMINDER_HOURS * 60);
+    // Popups on the family calendar mirror the task's "before" rules (guests use their own defaults).
+    if (turn.type === 'task') {
+      rulesOf_(turn.notify_rules).filter(r => r.kind === 'before')
+        .forEach(r => event.addPopupReminder(Math.min(r.minutes, 40320)));
+    } else {
+      event.addPopupReminder(120);
+    }
     return event.getId();
   } catch (e) {
     console.warn('calendar failed', e);
@@ -724,11 +995,14 @@ function withLock_(fn) {
 function turnView_(t) {
   return {
     id: t.id, activity_id: t.activity_id, type: t.type, title: t.title,
+    one_time: t.type === 'task' && !t.activity_id,
     assignee: t.assignee, members: members_(t.assignee), due_at: ms_(t.due_at),
-    place: String(t.place || ''), status: t.status, card: t.card || '',
+    place: String(t.place || ''), status: t.status,
     started_at: ms_(t.started_at), completed_at: ms_(t.completed_at),
     completed_by: t.completed_by, extra_request: t.extra_request || '',
     extra_reason: String(t.extra_reason || ''), note: String(t.note || ''),
+    notify_rules: t.type === 'task' ? rulesOf_(t.notify_rules) : [],
+    offer_to: t.offer_to || '', offer_kind: t.offer_kind || '', offer_by: t.offer_by || '',
   };
 }
 

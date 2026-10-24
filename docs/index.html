@@ -15,10 +15,10 @@
 <style>
   :root { --bg:#f5f6f8; --card:#fff; --ink:#1d2330; --muted:#6b7280; --line:#e3e6ea;
           --accent:#2563eb; --ok:#15803d; --warn:#b45309; --bad:#dc2626;
-          --yellow:#facc15; --red:#dc2626; }
+          --yellow:#facc15; --red:#dc2626; --gold:#d97706; }
   @media (prefers-color-scheme: dark) {
     :root { --bg:#111418; --card:#1b2027; --ink:#e8eaed; --muted:#9aa3ad; --line:#2b323b;
-            --accent:#60a5fa; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; }
+            --accent:#60a5fa; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; --gold:#fbbf24; }
   }
   * { box-sizing: border-box; }
   body { margin:0; font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
@@ -30,11 +30,15 @@
   .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:10px; }
   .card.yellow { border-left:5px solid var(--yellow); }
   .card.red { border-left:5px solid var(--red); }
+  .card.good { border-left:5px solid var(--gold); }
+  .card.offer { border:2px solid var(--accent); }
+  .card.dim { opacity:.6; }
   .row { display:flex; justify-content:space-between; align-items:center; gap:8px; }
   .muted { color:var(--muted); font-size:14px; }
   .title { font-weight:600; }
   .chip { display:inline-block; padding:2px 9px; margin:2px 4px 2px 0; border-radius:999px; font-size:13px; border:1px solid var(--line); }
   .chip.pen { border-color:var(--bad); color:var(--bad); }
+  .chip.sw { border-color:var(--accent); color:var(--accent); }
   .overdue { color:var(--bad); } .soon { color:var(--warn); } .ok { color:var(--ok); }
   .banner { background:var(--accent); color:#fff; border-radius:12px; padding:12px 14px; margin-bottom:10px; }
   .btn { border:0; border-radius:10px; padding:9px 14px; font-size:15px; background:var(--accent); color:#fff; cursor:pointer; text-decoration:none; }
@@ -48,9 +52,16 @@
   label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
   .check { display:flex; gap:8px; align-items:center; color:var(--ink); font-size:15px; }
   .actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:12px; }
-  table.cards { width:100%; border-collapse:collapse; }
-  table.cards td { padding:6px 4px; border-bottom:1px solid var(--line); }
-  table.cards td.n { text-align:center; width:64px; }
+  .rule { display:flex; gap:6px; align-items:center; margin-bottom:10px; flex-wrap:wrap;
+          padding-bottom:10px; border-bottom:1px dashed var(--line); }
+  .rule select, .rule input { width:auto; flex:1; min-width:70px; }
+  .rule .r-kind { flex-basis:calc(100% - 50px); }
+  .rule .x { flex:none; }
+  .notice { border-radius:8px; padding:8px 10px; margin-top:10px; background:var(--bg); border:1px solid var(--line); }
+  table.sum { width:100%; border-collapse:collapse; }
+  table.sum td { padding:6px 4px; border-bottom:1px solid var(--line); }
+  table.sum td.n { text-align:center; width:72px; }
+  .dots { letter-spacing:2px; }
   nav { position:fixed; bottom:0; left:0; right:0; display:flex; background:var(--card); border-top:1px solid var(--line); }
   nav button { flex:1; border:0; background:none; padding:8px 0 12px; font-size:12px; color:var(--muted); cursor:pointer; }
   nav button.on { color:var(--accent); font-weight:600; }
@@ -67,7 +78,7 @@
 <div id="toast"></div>
 
 <script>
-let TOKEN = '', S = null, TAB = 'mine', EDITING = false;
+let TOKEN = '', S = null, TAB = 'tasks', EDITING = false;
 const $ = sel => document.querySelector(sel);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
   c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
@@ -102,6 +113,7 @@ function when(ms) {
   return d.toLocaleDateString(undefined, { weekday:'short', day:'numeric', month:'numeric' }) + ' ' +
          d.toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit' });
 }
+const day = ms => new Date(ms).toLocaleDateString(undefined, { weekday:'short', day:'numeric', month:'short' });
 function rel(ms) {
   const diff = ms - Date.now(), abs = Math.abs(diff), h = abs / 3600000;
   const txt = h < 1 ? Math.round(abs / 60000) + ' min' : h < 48 ? Math.round(h) + ' h' : Math.round(h / 24) + ' days';
@@ -114,16 +126,33 @@ function tonight9pm() {
   if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);  // already past 21:00 → tomorrow
   return d.getTime();
 }
-const STATUS = { done:'✅ Done', missed:'🟥 Missed', excused:'➖ Excused', cancelled:'🚫 Cancelled' };
-const CARD = { yellow:'🟨', red:'🟥' };
+/** The next two 1st-of-month dates (today counts if it is the 1st). */
+function nextPaydays() {
+  const now = new Date();
+  const first = now.getDate() === 1 ? new Date(now.getFullYear(), now.getMonth(), 1)
+                                    : new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  return [first, new Date(first.getFullYear(), first.getMonth() + 1, 1)];
+}
+const shekel = n => '₪' + Number(n).toLocaleString();
+function describeRule(r) {
+  if (r.kind === 'before') {
+    return (r.minutes % 60 === 0 ? (r.minutes / 60) + ' h' : r.minutes + ' min') + ' before';
+  }
+  return (r.days === 1 ? 'the day before' : r.days + ' days before') + ' at ' + r.time;
+}
+const rulesText = rules => rules.length ? rules.map(describeRule).join(' · ') : 'no reminders';
+const STATUS = { done:'✅ Done', missed:'❌ Missed', excused:'➖ Excused', cancelled:'🚫 Cancelled' };
 const isMine = t => t.members.indexOf(S.me.name) >= 0;
 const pendingRequests = () => S.open.filter(t => t.extra_request === 'pending');
+const memberOptions = (exclude, selected) => S.users.filter(u => u.name !== exclude)
+  .map(u => `<option ${u.name === selected ? 'selected' : ''}>${esc(u.name)}</option>`).join('');
+const rotatingTasks = () => S.activities.filter(a => a.type === 'task' && a.active);
 
 // ---------- shell ----------
 function render() {
   $('#who').textContent = S.me.name + (S.me.isAdmin ? ' · admin' : '');
-  const mine = S.open.filter(t => isMine(t) && t.type === 'task').length;
-  const tabs = [['mine','🙋','My turns', mine], ['schedule','📅','Schedule'], ['history','🕘','History'], ['board','📌','Board']];
+  const mine = S.open.filter(t => isMine(t) && t.type === 'task').length + S.offers.length;
+  const tabs = [['tasks','🧹','Tasks', mine], ['cards','🟨','Cards'], ['fun','🎉','Fun Stuff']];
   if (S.me.isAdmin) tabs.push(['admin','⚙️','Admin', pendingRequests().length]);
   $('#nav').innerHTML = tabs.map(([id, ic, label, n]) =>
     `<button class="${TAB === id ? 'on' : ''}" onclick="go('${id}')"><span class="ic">${ic}</span>${label}${n ? `<span class="badge">${n}</span>` : ''}</button>`).join('');
@@ -133,24 +162,30 @@ function render() {
 function go(tab) { TAB = tab; EDITING = false; render(); }
 
 function taskCard(t) {
-  const canAct = isMine(t) || S.me.isAdmin;
-  const redAt = t.due_at + S.config.graceHours * 3600000;
-  let state = t.status === 'in_progress' ? `▶ In progress since ${when(t.started_at)}` : 'Not started';
+  const mine = isMine(t);
+  const canAct = mine || S.me.isAdmin;
+  const state = t.status === 'in_progress' ? `▶ In progress since ${when(t.started_at)}` : 'Not started';
   const extra = { pending:'⏳ Extra time requested', granted:'⏳ Extra time granted', refused:'⏳ Extra time refused' }[t.extra_request] || '';
   let buttons = '';
-  if (canAct && t.status === 'assigned') {
+  if (t.offer_to) {
+    buttons = `<span class="muted">🔄 Waiting for ${esc(t.offer_to)} to ${t.offer_kind === 'switch' ? 'switch' : 'take it'}</span>`
+      + (t.offer_by === S.me.name ? `<button class="btn sec small" onclick="answerOffer('${t.id}', false, this)">Withdraw</button>` : '');
+  } else if (canAct && t.status === 'assigned') {
     buttons = `<button class="btn go" onclick="startTask('${t.id}', this)">▶ Start</button>`;
+    if (mine) {
+      buttons += `<button class="btn sec small" onclick="offerForm('${t.id}', 'pass')">Pass to…</button>`;
+      if (!t.one_time) buttons += `<button class="btn sec small" onclick="offerForm('${t.id}', 'switch')">Switch with…</button>`;
+    }
   } else if (canAct && t.status === 'in_progress') {
     buttons = `<input id="note-${t.id}" placeholder="Note (optional)" style="flex:1;min-width:140px">
                <button class="btn" onclick="complete('${t.id}', this)">✓ Done</button>`;
   }
-  if (isMine(t) && t.extra_request !== 'pending') {
-    buttons += `<button class="btn sec" onclick="askExtra('${t.id}')">⏳ Extra time</button>`;
+  if (mine && t.extra_request !== 'pending' && !t.offer_to) {
+    buttons += `<button class="btn sec small" onclick="askExtra('${t.id}')">⏳ Extra time</button>`;
   }
-  return `<div class="card ${t.card}">
-    <div class="row"><span class="title">🧹 ${esc(t.title)} ${CARD[t.card] || ''}</span><span class="muted">${esc(who(t.assignee))}</span></div>
+  return `<div class="card">
+    <div class="row"><span class="title">🧹 ${esc(t.title)}${t.one_time ? ' <span class="chip">one-time</span>' : ''}</span><span class="muted">${esc(who(t.assignee))}</span></div>
     <div class="${dueClass(t.due_at)}">Due ${when(t.due_at)} · ${rel(t.due_at)}</div>
-    ${t.card === 'yellow' ? `<div class="overdue">🟨 Yellow card — finish by ${when(redAt)} to avoid a red card</div>` : ''}
     <div class="muted">${state}${extra ? ' · ' + extra : ''}</div>
     ${buttons ? `<div class="actions">${buttons}</div>` : ''}
   </div>`;
@@ -163,48 +198,76 @@ function funCard(t) {
     <div class="muted">📍 ${t.place ? esc(t.place) : 'Place not set yet'}</div>
   </div>`;
 }
-const turnCard = t => t.type === 'fun' ? funCard(t) : taskCard(t);
-const nextUp = a => a.upcoming.map(u => `<span class="chip ${u.penalty ? 'pen' : ''}" title="${u.penalty ? 'Extra turn (red card)' : ''}">${esc(who(u.name))}${u.penalty ? ' 🟥' : ''}</span>`).join('');
+const nextUp = a => a.upcoming.map(u => `<span class="chip ${u.penalty ? 'pen' : u.switched ? 'sw' : ''}" title="${u.penalty ? 'Extra turn (red card)' : u.switched ? 'Switched turn' : ''}">${esc(who(u.name))}${u.penalty ? ' 🟥' : u.switched ? ' 🔄' : ''}</span>`).join('');
+
+function cardItem(c) {
+  const icon = c.color === 'red' ? '🟥' : '🟨';
+  return `<div class="card ${c.color} ${c.color === 'yellow' && c.used ? 'dim' : ''}">
+    <div class="row"><span class="title">${icon} ${esc(c.member)}</span><span class="muted">${day(c.created_at)}</span></div>
+    <div>${esc(c.explanation)}</div>
+    <div class="muted">${c.task ? 'About: ' + esc(c.task) + ' · ' : ''}${c.color === 'red' ? 'Extra turn in: <b>' + esc(c.red_task) + '</b> · ' : ''}${c.color === 'yellow' && c.used ? 'became part of a red card · ' : ''}by ${esc(c.by)}</div>
+  </div>`;
+}
+
+function goodItem(g) {
+  return `<div class="card good">
+    <div class="row"><span class="title">🌟 ${esc(g.member)}</span><span class="muted">${day(g.created_at)}</span></div>
+    <div>${esc(g.explanation)}</div>
+    ${g.prize ? `<div style="margin-top:4px">🎁 <b>Prize:</b> ${esc(g.prize)}</div>` : ''}
+    <div class="muted">by ${esc(g.by)}</div>
+  </div>`;
+}
 
 // ---------- views ----------
 const VIEWS = {
-  mine() {
+  tasks() {
     const byDue = (a, b) => a.due_at - b.due_at;
-    const mine = S.open.filter(isMine).sort(byDue);
-    const others = S.open.filter(t => !isMine(t) && t.type === 'task').sort(byDue);
-    const late = mine.filter(t => t.type === 'task' && t.due_at < Date.now()).length;
-    return (late ? `<div class="banner">⏰ You have ${late} overdue task${late > 1 ? 's' : ''}!</div>` : '') +
-      '<h2>My turns</h2>' + (mine.length ? mine.map(turnCard).join('') : '<div class="card muted">Nothing for you right now 🎉</div>') +
-      '<h2>Everyone else\'s tasks</h2>' + (others.length ? others.map(taskCard).join('') : '<div class="card muted">No open tasks.</div>');
-  },
-  schedule() {
-    const tasks = S.activities.filter(a => a.active && a.type === 'task');
-    const fun = S.activities.filter(a => a.active && a.type === 'fun');
-    return '<h2>Cards</h2><div class="card"><table class="cards"><tr><td></td><td class="n muted">🟨</td><td class="n muted">🟥</td></tr>' +
-        S.cards.map(c => `<tr><td>${esc(c.name)}</td><td class="n">${c.yellow}</td><td class="n">${c.red}</td></tr>`).join('') + '</table></div>' +
-      '<h2>Tasks</h2>' + (tasks.map(a => `<div class="card">
-        <div class="title">🧹 ${esc(a.name)}</div>
-        ${a.open.map(t => `<div>Now: <b>${esc(who(t.assignee))}</b> ${CARD[t.card] || ''} · <span class="${dueClass(t.due_at)}">due ${when(t.due_at)}</span></div>`).join('')}
-        <div class="muted" style="margin-top:6px">Next up:</div><div>${nextUp(a)}</div></div>`).join('') || '<div class="card muted">No tasks yet.</div>') +
-      '<h2>Fun</h2>' + (fun.map(a => `<div class="card">
-        <div class="row"><span class="title">🎉 ${esc(a.name)}</span><span class="muted">every ${a.frequency_days} day${a.frequency_days > 1 ? 's' : ''}</span></div>
-        ${a.open.map(t => `<div>Coming: <b>${esc(who(t.assignee))}</b> · ${when(t.due_at)}</div><div class="muted">📍 ${t.place ? esc(t.place) : 'Place not set yet'}</div>`).join('')}
-        <div class="muted" style="margin-top:6px">After that:</div><div>${nextUp(a)}</div></div>`).join('') || '<div class="card muted">No fun activities yet.</div>');
-  },
-  history() {
-    if (!S.history.length) return '<div class="card muted">No history yet.</div>';
-    return '<h2>Recent</h2>' + S.history.map(t => `<div class="card ${t.card}">
-      <div class="row"><span class="title">${t.type === 'fun' ? '🎉' : '🧹'} ${esc(t.title)} ${CARD[t.card] || ''}</span>
+    const tasks = S.open.filter(t => t.type === 'task');
+    const mine = tasks.filter(isMine).sort(byDue);
+    const others = tasks.filter(t => !isMine(t)).sort(byDue);
+    const late = mine.filter(t => t.due_at < Date.now()).length;
+    const offers = S.offers.map(t => `<div class="card offer">
+      <div class="title">🔄 ${esc(t.offer_by)} asks you to take “${esc(t.title)}”</div>
+      <div class="${dueClass(t.due_at)}">Due ${when(t.due_at)} · ${rel(t.due_at)}</div>
+      ${t.offer_kind === 'switch' ? `<div class="muted">Switch: in return, ${esc(t.offer_by)} will do your next “${esc(t.title)}” turn.</div>` : '<div class="muted">Pass: you take it, nothing in return.</div>'}
+      <div class="actions"><button class="btn go" onclick="answerOffer('${t.id}', true, this)">Accept</button>
+        <button class="btn sec" onclick="answerOffer('${t.id}', false, this)">Decline</button></div></div>`).join('');
+    const rotations = rotatingTasks().map(a => `<div class="card">
+      <div class="title">🧹 ${esc(a.name)}</div>
+      ${a.open.map(t => `<div>Now: <b>${esc(who(t.assignee))}</b> · <span class="${dueClass(t.due_at)}">due ${when(t.due_at)}</span></div>`).join('')}
+      <div class="muted" style="margin-top:6px">Next up:</div><div>${nextUp(a)}</div></div>`).join('');
+    const history = S.history.filter(t => t.type === 'task').map(t => `<div class="card">
+      <div class="row"><span class="title">${esc(t.title)}</span>
         <span class="${t.status === 'done' ? 'ok' : t.status === 'missed' ? 'overdue' : 'muted'}">${STATUS[t.status] || esc(t.status)}</span></div>
-      <div class="muted">${esc(who(t.assignee))} · ${when(t.due_at)}${t.place ? ' · ' + esc(t.place) : ''}${t.completed_by && !t.members.includes(t.completed_by) ? ' · by ' + esc(t.completed_by) : ''}</div>
+      <div class="muted">${esc(who(t.assignee))} · ${when(t.due_at)}${t.completed_by && !t.members.includes(t.completed_by) ? ' · by ' + esc(t.completed_by) : ''}</div>
       ${t.note ? `<div class="muted">“${esc(t.note)}”</div>` : ''}</div>`).join('');
+    return (late ? `<div class="banner">⏰ You have ${late} overdue task${late > 1 ? 's' : ''}!</div>` : '') +
+      (offers ? '<h2>Requests for you</h2>' + offers : '') +
+      '<h2>My tasks</h2>' + (mine.length ? mine.map(taskCard).join('') : '<div class="card muted">Nothing for you right now 🎉</div>') +
+      '<h2>Everyone else</h2>' + (others.length ? others.map(taskCard).join('') : '<div class="card muted">No open tasks.</div>') +
+      (rotations ? '<h2>Who\'s next</h2>' + rotations : '') +
+      (history ? '<h2>History</h2>' + history : '');
   },
-  board() {
-    return `<div class="card"><textarea id="noteText" rows="3" maxlength="500" placeholder="Write something for the family…" onfocus="EDITING=true"></textarea>
-      <div class="actions"><button class="btn" onclick="post(this)">Post</button></div></div>` +
-      S.board.map(n => `<div class="card"><div class="row"><b>${esc(n.author)}</b><span class="muted">${when(n.created_at)}</span></div>
-        <div style="white-space:pre-wrap">${esc(n.text)}</div>
-        ${n.author === S.me.name || S.me.isAdmin ? `<div class="actions"><button class="btn sec small" onclick="unpost('${n.id}', this)">Delete</button></div>` : ''}</div>`).join('');
+  cards() {
+    return '<h2>Cards</h2><div class="card"><table class="sum"><tr><td></td><td class="n muted">🟨 now</td><td class="n muted">🟥 total</td></tr>' +
+        S.cards.summary.map(c => `<tr><td>${esc(c.name)}</td><td class="n">${c.yellow ? '🟨' : '–'}</td><td class="n">${c.red}</td></tr>`).join('') +
+        '</table><div class="muted" style="margin-top:8px">A second yellow card becomes a red card, which means an extra turn in a task.</div></div>' +
+      '<h2>All cards</h2>' + (S.cards.list.map(cardItem).join('') || '<div class="card muted">No cards yet 👏</div>');
+  },
+  fun() {
+    const dates = S.open.filter(t => t.type === 'fun').sort((a, b) => a.due_at - b.due_at);
+    const per = S.goodWords.perPrize;
+    const paydays = nextPaydays();
+    return '<h2>Coming dates</h2>' + (dates.map(funCard).join('') || '<div class="card muted">Nothing scheduled.</div>') +
+      '<h2>Good words</h2><div class="card"><table class="sum">' +
+        S.goodWords.summary.map(g => { const p = g.count % per; return `<tr><td>${esc(g.name)}</td>
+          <td class="n">🌟 ${g.count}</td><td class="dots">${'★'.repeat(p)}${'☆'.repeat(per - p)}</td></tr>`; }).join('') +
+        `</table><div class="muted" style="margin-top:8px">Every ${per} good words earn a prize 🎁</div></div>` +
+        S.goodWords.list.map(goodItem).join('') +
+      '<h2>Allowance</h2>' + (S.allowance.filter(a => a.amount > 0 || !S.me.isAdmin).map(a => `<div class="card">
+        <div class="row"><span class="title">💰 ${esc(a.name)}</span><span class="title">${shekel(a.amount)} / month</span></div>
+        ${paydays.map(d => `<div class="row muted"><span>${day(d.getTime())}</span><span>${shekel(a.amount)}</span></div>`).join('')}
+      </div>`).join('') || '<div class="card muted">No allowance set.</div>');
   },
   admin() {
     const requests = pendingRequests();
@@ -218,21 +281,26 @@ const VIEWS = {
           <button class="btn" onclick="answerExtra('${t.id}', val('hrs-${t.id}'), this)">Add time</button>
           <button class="btn sec" onclick="answerExtra('${t.id}', 0, this)">Refuse</button></div></div>`).join('') : '') +
       `<div class="actions" style="margin-top:${requests.length ? 18 : 0}px">
-        <button class="btn" onclick="editActivity('task')">+ New task</button>
-        <button class="btn" onclick="editActivity('fun')">+ New fun</button>
+        <button class="btn" onclick="giveCard()">🟨 Yellow card</button>
+        <button class="btn" onclick="giveGoodWord()">🌟 Good word</button>
+        <button class="btn" onclick="oneTimeTask()">+ One-time task</button></div>
+      <div class="actions">
+        <button class="btn sec" onclick="editActivity('task')">+ New task</button>
+        <button class="btn sec" onclick="editActivity('fun')">+ New fun</button>
         <button class="btn sec" onclick="editUser()">+ Add member</button>
         <button class="btn sec" onclick="showLinks()">Personal links</button>
         <button class="btn sec" onclick="runCheck(this)">Run check now</button></div>` +
-      '<h2>Tasks</h2>' + (tasks.map(a => `<div class="card">
+      '<h2>Rotating tasks</h2>' + (tasks.map(a => `<div class="card">
         <div class="row"><span class="title">🧹 ${esc(a.name)}${a.active ? '' : ' <span class="muted">(inactive)</span>'}</span>
           <button class="btn sec small" onclick="editActivity('task', '${a.id}')">Edit</button></div>
         <div class="muted">${esc(list(a.rotation).map(who).join(' → '))}</div>
-        ${a.active && a.upcoming.length ? `<div class="actions"><button class="btn" onclick="assignTask('${a.id}')">Assign to ${esc(who(a.upcoming[0].name))}${a.upcoming[0].penalty ? ' 🟥' : ''}</button></div>` : ''}
+        <div class="muted">🔔 ${esc(rulesText(a.notify_rules))}</div>
+        ${a.active && a.upcoming.length ? `<div class="actions"><button class="btn" onclick="assignTask('${a.id}')">Assign to ${esc(who(a.upcoming[0].name))}${a.upcoming[0].penalty ? ' 🟥' : a.upcoming[0].switched ? ' 🔄' : ''}</button></div>` : ''}
       </div>`).join('') || '<div class="card muted">None yet.</div>') +
-      '<h2>Open tasks</h2>' + (openTasks.map(t => `<div class="card ${t.card}"><div class="row"><span class="title">${esc(t.title)} ${CARD[t.card] || ''}</span><span class="muted">${esc(who(t.assignee))}</span></div>
+      '<h2>Open tasks</h2>' + (openTasks.map(t => `<div class="card"><div class="row"><span class="title">${esc(t.title)}${t.one_time ? ' <span class="chip">one-time</span>' : ''}</span><span class="muted">${esc(who(t.assignee))}</span></div>
         <div class="${dueClass(t.due_at)}">Due ${when(t.due_at)} · ${t.status === 'in_progress' ? 'in progress' : 'not started'}</div>
         <div class="actions"><button class="btn sec small" onclick="editTurn('${t.id}')">Reassign / change due</button>
-        <button class="btn sec small" onclick="excuse('${t.id}', this)">Excuse (no card)</button></div></div>`).join('') || '<div class="card muted">None.</div>') +
+        <button class="btn sec small" onclick="excuse('${t.id}', this)">Excuse</button></div></div>`).join('') || '<div class="card muted">None.</div>') +
       '<h2>Fun</h2>' + (fun.map(a => { const t = a.open[0]; return `<div class="card">
         <div class="row"><span class="title">🎉 ${esc(a.name)}${a.active ? '' : ' <span class="muted">(inactive)</span>'}</span>
           <button class="btn sec small" onclick="editActivity('fun', '${a.id}')">Edit</button></div>
@@ -241,7 +309,7 @@ const VIEWS = {
           <div class="actions"><button class="btn" onclick="editTurn('${t.id}')">Update time &amp; place</button>
           <button class="btn sec small" onclick="excuse('${t.id}', this)">Cancel this one</button></div>` : ''}
       </div>`; }).join('') || '<div class="card muted">None yet.</div>') +
-      '<h2>Family</h2>' + S.users.map((u, i) => `<div class="card row"><div><span class="title">${esc(u.name)}</span> <span class="muted">${esc(u.role)}</span>
+      '<h2>Family</h2>' + S.users.map((u, i) => `<div class="card row"><div><span class="title">${esc(u.name)}</span> <span class="muted">${esc(u.role)} · ${shekel(u.allowance)}/month</span>
         <div class="muted">${[u.notify_email && '✉️ email', u.notify_calendar && '📅 calendar', u.notify_whatsapp && '💬 WhatsApp'].filter(Boolean).join(' · ') || 'no notifications'}</div></div>
         <button class="btn sec small" onclick="editUser(S.users[${i}].name)">Edit</button></div>`).join('');
   },
@@ -252,8 +320,7 @@ function busy(btn) { if (btn) btn.disabled = true; }
 function act(btn, promise, msg) { busy(btn); promise.then(s => { if (msg) toast(msg); update(s); }).catch(() => { if (btn) btn.disabled = false; }); }
 function startTask(id, btn) { act(btn, call('startTurn', id), 'Started — good luck!'); }
 function complete(id, btn) { act(btn, call('completeTurn', id, $('#note-' + id).value), 'Nice! ✓'); }
-function post(btn) { act(btn, call('postNote', $('#noteText').value)); }
-function unpost(id, btn) { act(btn, call('deleteNote', id)); }
+function answerOffer(id, accept, btn) { act(btn, call('answerOffer', id, accept), accept ? 'It\'s yours now' : 'Done'); }
 function excuse(id, btn) { act(btn, call('adminExcuseTurn', id)); }
 function answerExtra(id, hours, btn) { act(btn, call('adminAnswerExtraTime', id, Number(hours)), Number(hours) ? 'Time added' : 'Refused'); }
 function runCheck(btn) { act(btn, call('adminRunCheck'), 'Checked'); }
@@ -263,48 +330,147 @@ function form(title, body, onSave) {
   $('#view').innerHTML = `<h2>${title}</h2><div class="card">${body}
     <div class="actions"><button class="btn" id="saveBtn">Save</button><button class="btn sec" onclick="go(TAB)">Cancel</button></div></div>`;
   $('#saveBtn').onclick = () => { busy($('#saveBtn')); onSave().then(update).catch(() => $('#saveBtn').disabled = false); };
+  window.scrollTo(0, 0);
 }
 const val = id => $('#' + id).value;
 const chk = id => $('#' + id).checked;
 const msOf = id => new Date(val(id)).getTime();
 
+// ---------- reminder-rule editor ----------
+let RULES = [];
+function rulesEditor(rules) {
+  RULES = rules.map(r => Object.assign({}, r));
+  return `<label>Reminders (sent to the member before the due time)</label><div id="rules"></div>
+    <button type="button" class="btn sec small" onclick="addRule()">+ Add reminder</button>`;
+}
+function drawRules() {
+  $('#rules').innerHTML = RULES.map((r, i) => {
+    const inHours = r.kind === 'before' && r.minutes % 60 === 0;
+    return `<div class="rule" data-i="${i}">
+      <select class="r-kind" onchange="setRuleKind(${i}, this.value)">
+        <option value="before" ${r.kind === 'before' ? 'selected' : ''}>Before due</option>
+        <option value="daysBefore" ${r.kind === 'daysBefore' ? 'selected' : ''}>Days before, at</option></select>
+      <button type="button" class="btn sec small x" onclick="removeRule(${i})">✕</button>
+      ${r.kind === 'before'
+        ? `<input class="r-amt" type="number" min="1" value="${inHours ? r.minutes / 60 : r.minutes}">
+           <select class="r-unit"><option value="1" ${inHours ? '' : 'selected'}>minutes</option><option value="60" ${inHours ? 'selected' : ''}>hours</option></select>`
+        : `<input class="r-days" type="number" min="1" max="14" value="${r.days}"><input class="r-time" type="time" value="${r.time}">`}
+      </div>`;
+  }).join('') || '<div class="muted">No reminders.</div>';
+}
+function readRules() {
+  return [...document.querySelectorAll('#rules .rule')].map(row => {
+    if (row.querySelector('.r-kind').value === 'before') {
+      return { kind: 'before', minutes: Number(row.querySelector('.r-amt').value) * Number(row.querySelector('.r-unit').value) };
+    }
+    return { kind: 'daysBefore', days: Number(row.querySelector('.r-days').value), time: row.querySelector('.r-time').value };
+  });
+}
+function setRuleKind(i, kind) {
+  RULES = readRules();
+  RULES[i] = kind === 'before' ? { kind: 'before', minutes: 30 } : { kind: 'daysBefore', days: 1, time: '19:00' };
+  drawRules();
+}
+function addRule() { RULES = readRules(); RULES.push({ kind: 'before', minutes: 30 }); drawRules(); }
+function removeRule(i) { RULES = readRules(); RULES.splice(i, 1); drawRules(); }
+
+// ---------- forms ----------
 function askExtra(id) {
   const t = S.open.find(x => x.id === id);
   form('Ask for extra time: ' + esc(t.title), `
-    <div class="muted">Due ${when(t.due_at)}. The admins will get your request by email.</div>
+    <div class="muted">Due ${when(t.due_at)}. The admins will get your request.</div>
     <label>Why do you need more time? (optional)</label><textarea id="x_reason" rows="3" maxlength="200"></textarea>`,
     () => call('requestExtraTime', id, val('x_reason')));
 }
 
+function offerForm(id, kind) {
+  const t = S.open.find(x => x.id === id);
+  form((kind === 'switch' ? 'Switch: ' : 'Pass: ') + esc(t.title), `
+    <div class="muted">${kind === 'switch'
+      ? 'They do this turn now, and you do their next “' + esc(t.title) + '” turn.'
+      : 'They take this turn. Nothing in return.'} They have to accept.</div>
+    <label>Ask</label><select id="o_to">${memberOptions(S.me.name)}</select>`,
+    () => call('offerTurn', id, val('o_to'), kind));
+}
+
 function assignTask(activityId) {
   const a = S.activities.find(x => x.id === activityId);
+  const next = a.upcoming[0];
   form('Assign: ' + esc(a.name), `
-    <div>To: <b>${esc(who(a.upcoming[0].name))}</b>${a.upcoming[0].penalty ? ' <span class="overdue">(extra turn after a red card)</span>' : ''}</div>
+    <div>To: <b>${esc(who(next.name))}</b>${next.penalty ? ' <span class="overdue">(extra turn — red card)</span>' : next.switched ? ' <span class="muted">(switched turn)</span>' : ''}</div>
     <label>Due date &amp; time</label><input id="as_due" type="datetime-local" value="${toInput(tonight9pm())}">
-    <div class="muted">An email and a calendar invite (2-hour reminder) will be sent.</div>`,
+    <div class="muted">An email + calendar invite go out now. Reminders: ${esc(rulesText(a.notify_rules))}.</div>`,
     () => call('adminAssignTask', activityId, msOf('as_due')));
 }
 
+function oneTimeTask() {
+  form('One-time task', `
+    <label>Task</label><input id="ot_title" placeholder="Clean the car">
+    <label>For</label><select id="ot_who">${memberOptions('')}</select>
+    <label>Due date &amp; time</label><input id="ot_due" type="datetime-local" value="${toInput(tonight9pm())}">
+    ${rulesEditor([{ kind: 'before', minutes: 120 }])}`,
+    () => call('adminCreateOneTimeTask', { title: val('ot_title'), assignee: val('ot_who'), due_at: msOf('ot_due'), notify_rules: readRules() }));
+  drawRules();
+}
+
+function giveCard() {
+  const tasks = rotatingTasks();
+  const taskOptions = tasks.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+  form('🟨 Yellow card', `
+    <label>For</label><select id="c_who" onchange="cardRedNotice()">${memberOptions('')}</select>
+    <label>Why (everyone will see this)</label><textarea id="c_why" rows="3" maxlength="300"></textarea>
+    <label>Related task (optional)</label><select id="c_task"><option value="">—</option>${taskOptions}</select>
+    <div id="c_red"></div>`,
+    () => call('adminGiveCard', { member: val('c_who'), explanation: val('c_why'), task_id: val('c_task'),
+                                  red_task_id: $('#c_redtask') ? val('c_redtask') : '' }));
+  cardRedNotice();
+}
+function cardRedNotice() {
+  const s = S.cards.summary.find(c => c.name === val('c_who'));
+  const tasks = rotatingTasks();
+  $('#c_red').innerHTML = s && s.yellow ? `<div class="notice">🟥 <b>${esc(s.name)} already has a yellow card</b> — this one makes a <b>red card</b>.
+      <label>Extra turn in</label>${tasks.length ? `<select id="c_redtask">${tasks.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>`
+      : '<div class="overdue">Create a rotating task first.</div>'}</div>` : '';
+}
+
+function giveGoodWord() {
+  form('🌟 Good word', `
+    <label>For</label><select id="g_who" onchange="goodPrizeNotice()">${memberOptions('')}</select>
+    <label>What for (everyone will see this)</label><textarea id="g_why" rows="3" maxlength="300"></textarea>
+    <div id="g_prize"></div>`,
+    () => call('adminGiveGoodWord', { member: val('g_who'), explanation: val('g_why'), prize: $('#g_prizeval') ? val('g_prizeval') : '' }));
+  goodPrizeNotice();
+}
+function goodPrizeNotice() {
+  const g = S.goodWords.summary.find(x => x.name === val('g_who'));
+  const next = (g ? g.count : 0) + 1;
+  $('#g_prize').innerHTML = next % S.goodWords.perPrize === 0 ? `<div class="notice">🎁 This is good word #${next} — it comes with a prize.
+      <label>Prize</label><input id="g_prizeval" placeholder="Pizza night of your choice"></div>` : '';
+}
+
 function editActivity(type, id) {
-  const a = S.activities.find(x => x.id === id) || { name:'', rotation:'', frequency_days:7, active:true };
+  const a = S.activities.find(x => x.id === id) || { name:'', rotation:'', frequency_days:7, active:true, notify_rules:[{ kind:'before', minutes:120 }] };
   const names = S.users.map(u => u.name).join(', ');
   const isFun = type === 'fun';
-  form((id ? 'Edit ' : 'New ') + (isFun ? 'fun activity' : 'task'), `
+  form((id ? 'Edit ' : 'New ') + (isFun ? 'fun activity' : 'rotating task'), `
     <label>Name</label><input id="a_name" value="${esc(a.name)}" placeholder="${isFun ? 'Date with a parent · Movie night' : 'Laundry · Dishes'}">
     <label>Rotation order (comma separated${isFun ? '; join people with + for a pair' : ''})</label>
     <input id="a_rot" value="${esc(a.rotation)}" placeholder="${isFun ? 'Dad+Noa, Mom+Yuval' : 'Noa, Yuval, Yael'}">
     <div class="muted">Members: ${esc(names)}</div>
-    ${isFun ? `<label>Repeat every (days)</label><input id="a_freq" type="number" min="1" value="${a.frequency_days}">` : ''}
+    ${isFun ? `<label>Repeat every (days)</label><input id="a_freq" type="number" min="1" value="${a.frequency_days}">` : rulesEditor(a.notify_rules)}
     ${isFun && !id ? `<label>Coming event: time</label><input id="a_first" type="datetime-local" value="${toInput(tonight9pm())}">
       <label>Coming event: place</label><input id="a_place" placeholder="Ice cream at the mall">` : ''}
     ${isFun && id ? '<div class="muted">To change the coming event, use “Update time &amp; place” in the Admin tab.</div>' : ''}
+    ${!isFun && id ? '<div class="muted">Reminder changes apply to the next assignment.</div>' : ''}
     <label class="check"><input id="a_active" type="checkbox" ${a.active ? 'checked' : ''}> Active</label>`,
     () => call('adminSaveActivity', {
       id: id || '', type: type, name: val('a_name'), rotation: val('a_rot'), active: chk('a_active'),
       frequency_days: isFun ? val('a_freq') : null,
+      notify_rules: isFun ? null : readRules(),
       first_at: isFun && !id ? msOf('a_first') : null,
       place: isFun && !id ? val('a_place') : null,
     }));
+  if (!isFun) drawRules();
 }
 
 function editTurn(id) {
@@ -321,10 +487,11 @@ function editTurn(id) {
 }
 
 function editUser(name) {
-  const u = S.users.find(x => x.name === name) || { name:'', email:'', phone:'', role:'member', notify_email:true, notify_calendar:true, notify_whatsapp:false };
+  const u = S.users.find(x => x.name === name) || { name:'', email:'', phone:'', role:'member', notify_email:true, notify_calendar:true, notify_whatsapp:false, allowance:0 };
   form(name ? 'Edit ' + esc(name) : 'Add member', `
     ${name ? '' : '<label>Name (used in rotations, cannot be changed later)</label><input id="u_name">'}
     <label>Role</label><select id="u_role"><option value="member">Member</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option></select>
+    <label>Monthly allowance (₪, paid on the 1st)</label><input id="u_allow" type="number" min="0" step="1" value="${u.allowance}">
     <label>Email (for email + calendar invites)</label><input id="u_email" type="email" value="${esc(u.email)}">
     <label>WhatsApp phone (international, e.g. +9725…)</label><input id="u_phone" type="tel" value="${esc(u.phone)}">
     <label>CallMeBot API key ${u.has_whatsapp_key ? '(saved — leave empty to keep)' : ''}</label><input id="u_key" autocomplete="off">
@@ -333,7 +500,7 @@ function editUser(name) {
     <label class="check"><input id="u_nw" type="checkbox" ${u.notify_whatsapp ? 'checked' : ''}> WhatsApp messages</label>`,
     () => call('adminSaveUser', {
       existing: name || '', name: name ? name : val('u_name'), role: val('u_role'), email: val('u_email'),
-      phone: val('u_phone'), whatsapp_apikey: val('u_key'),
+      phone: val('u_phone'), whatsapp_apikey: val('u_key'), allowance: val('u_allow'),
       notify_email: chk('u_ne'), notify_calendar: chk('u_nc'), notify_whatsapp: chk('u_nw'),
     }));
 }
