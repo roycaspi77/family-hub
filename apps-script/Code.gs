@@ -17,8 +17,12 @@
  *
  * A rotation slot is a single name ("Noa") or a group joined with "+" ("Dad+Noa").
  *
+ * Notifications go by email, Google Calendar invites, and push notifications
+ * to the installed app (Firebase Cloud Messaging). Push needs the script
+ * property FIREBASE_SERVICE_ACCOUNT (the service-account JSON from Firebase).
+ *
  * Sheets (created / upgraded by setup()):
- *   Users      — family members, personal link token, role, notification prefs, allowance
+ *   Users      — family members, personal link token, role, notification prefs, allowance, push devices
  *   Activities — tasks and fun activities with their rotation state
  *   Turns      — every assignment / event and its outcome
  *   Cards      — yellow and red cards
@@ -44,8 +48,8 @@ const MAX_RULES = 5;
 const OPEN_STATUSES = ['assigned', 'in_progress', 'upcoming'];
 
 const HEADERS = {
-  Users: ['token', 'name', 'email', 'phone', 'role', 'whatsapp_apikey',
-          'notify_email', 'notify_calendar', 'notify_whatsapp', 'allowance'],
+  Users: ['token', 'name', 'email', 'role', 'notify_email', 'notify_calendar',
+          'allowance', 'notify_push', 'push_tokens'],
   Activities: ['id', 'type', 'name', 'rotation', 'current_index', 'penalty_queue',
                'frequency_days', 'next_due', 'place', 'active', 'notify_rules',
                'swap_queue'],
@@ -91,7 +95,7 @@ function setup() {
     writeRow_('Users', {
       token: newToken_(), name: 'Admin',
       email: Session.getEffectiveUser().getEmail(), role: 'admin',
-      notify_email: true, notify_calendar: true, notify_whatsapp: false, allowance: 0,
+      notify_email: true, notify_calendar: true, notify_push: true, allowance: 0,
     });
   }
 
@@ -117,6 +121,7 @@ function printLinks() {
 // caller's token as its first argument.
 const API = {
   getState, startTurn, completeTurn, requestExtraTime, offerTurn, answerOffer,
+  registerPush, unregisterPush, testPush,
   adminSaveActivity, adminAssignTask, adminCreateOneTimeTask, adminEditTurn,
   adminAnswerExtraTime, adminExcuseTurn, adminGiveCard, adminGiveGoodWord,
   adminSaveUser, adminGetLinks, adminRunCheck,
@@ -156,11 +161,12 @@ function getState(token) {
   const goodWords = readAll_('GoodWords');
 
   return {
-    me: { name: me.name, role: me.role, isAdmin: admin },
+    me: { name: me.name, role: me.role, isAdmin: admin,
+          pushDevices: list_(me.push_tokens).length, pushReady: !!pushAccount_() },
     users: users_().map(u => admin ? {
-      name: u.name, role: u.role, email: u.email, phone: String(u.phone || ''),
+      name: u.name, role: u.role, email: u.email,
       notify_email: bool_(u.notify_email), notify_calendar: bool_(u.notify_calendar),
-      notify_whatsapp: bool_(u.notify_whatsapp), has_whatsapp_key: !!u.whatsapp_apikey,
+      notify_push: bool_(u.notify_push), push_devices: list_(u.push_tokens).length,
       allowance: Number(u.allowance) || 0,
     } : { name: u.name, role: u.role }),
     activities: allActivities.filter(a => admin || bool_(a.active)).map(a => ({
@@ -323,6 +329,43 @@ function answerOffer(token, turnId, accept) {
                 + (kind === 'switch' ? `\nYou will do ${me.name}'s next "${turn.title}" turn.` : ''));
     return getState(token);
   });
+}
+
+// ---------- Push notifications (this phone) ----------
+
+const MAX_PUSH_DEVICES = 5;
+
+/** Saves this phone's Firebase token so the member gets push notifications on it. */
+function registerPush(token, fcmToken) {
+  return withLock_(() => {
+    const me = auth_(token);
+    const device = clean_(fcmToken, 4096);
+    if (!device || /[,\s]/.test(device)) throw new Error('Invalid device token.');
+    const tokens = list_(me.push_tokens).filter(t => t !== device);
+    tokens.push(device);
+    me.push_tokens = tokens.slice(-MAX_PUSH_DEVICES).join(',');
+    me.notify_push = true;
+    writeRow_('Users', me);
+    return getState(token);
+  });
+}
+
+function unregisterPush(token, fcmToken) {
+  return withLock_(() => {
+    const me = auth_(token);
+    me.push_tokens = list_(me.push_tokens).filter(t => t !== fcmToken).join(',');
+    writeRow_('Users', me);
+    return getState(token);
+  });
+}
+
+function testPush(token) {
+  const me = auth_(token);
+  if (!pushAccount_()) throw new Error('Push is not set up yet (FIREBASE_SERVICE_ACCOUNT is missing in Apps Script).');
+  if (!list_(me.push_tokens).length) throw new Error('Turn on notifications on this phone first.');
+  const sent = withLock_(() => sendPush_(me, '🔔 Test from Family Hub', `Hi ${me.name}, notifications work!`));
+  if (!sent) throw new Error('Firebase did not accept the notification. Turn notifications off and on again on this phone.');
+  return getState(token);
 }
 
 // ---------- Admin API ----------
@@ -561,13 +604,11 @@ function adminSaveUser(token, input) {
       user = { token: newToken_(), name: name };
     }
     user.email = clean_(input.email, 100);
-    user.phone = clean_(input.phone, 20).replace(/[^\d+]/g, '');
     user.role = input.role === 'admin' ? 'admin' : 'member';
     user.notify_email = !!input.notify_email;
     user.notify_calendar = !!input.notify_calendar;
-    user.notify_whatsapp = !!input.notify_whatsapp;
+    user.notify_push = !!input.notify_push;
     user.allowance = Math.max(0, Math.min(100000, Number(input.allowance) || 0));
-    if (input.whatsapp_apikey) user.whatsapp_apikey = clean_(input.whatsapp_apikey, 40);
     writeRow_('Users', user);
     usersCache_ = null;
     return getState(token);
@@ -838,7 +879,7 @@ function validateSlot_(slot) {
 }
 
 // ============================================================================
-// Notifications: email, WhatsApp (CallMeBot), Google Calendar
+// Notifications: email, push (Firebase Cloud Messaging), Google Calendar
 // ============================================================================
 
 /** Notifies every person in a slot ("Dad+Noa" notifies both). */
@@ -868,16 +909,98 @@ function notifyUser_(name, subject, body) {
     catch (e) { console.warn('email failed', e); }
   }
 
-  // The personal link is deliberately left out of WhatsApp: it would pass
-  // through CallMeBot's servers.
-  if (bool_(user.notify_whatsapp) && user.phone && user.whatsapp_apikey) {
-    const url = 'https://api.callmebot.com/whatsapp.php'
-      + '?phone=' + encodeURIComponent(user.phone)
-      + '&text=' + encodeURIComponent(subject + '\n' + body)
-      + '&apikey=' + encodeURIComponent(user.whatsapp_apikey);
-    try { UrlFetchApp.fetch(url, { muteHttpExceptions: true }); }
-    catch (e) { console.warn('whatsapp failed', e); }
+  if (bool_(user.notify_push) && list_(user.push_tokens).length) {
+    try { sendPush_(user, subject, body); }
+    catch (e) { console.warn('push failed', e); }
   }
+}
+
+/** The Firebase service account from the script properties, or null if push isn't set up. */
+function pushAccount_() {
+  const raw = PropertiesService.getScriptProperties().getProperty('FIREBASE_SERVICE_ACCOUNT');
+  if (!raw) return null;
+  try {
+    const account = JSON.parse(raw);
+    return account.client_email && account.private_key && account.project_id ? account : null;
+  } catch (e) {
+    console.warn('FIREBASE_SERVICE_ACCOUNT is not valid JSON');
+    return null;
+  }
+}
+
+/** OAuth access token for FCM, from a service-account JWT; cached for 50 minutes. */
+function fcmAccessToken_(account) {
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get('fcm_access_token');
+  if (cached) return cached;
+
+  const now = Math.floor(Date.now() / 1000);
+  const b64 = s => Utilities.base64EncodeWebSafe(s).replace(/=+$/, '');
+  const unsigned = b64(JSON.stringify({ alg: 'RS256', typ: 'JWT' })) + '.' + b64(JSON.stringify({
+    iss: account.client_email,
+    scope: 'https://www.googleapis.com/auth/firebase.messaging',
+    aud: 'https://oauth2.googleapis.com/token',
+    iat: now, exp: now + 3600,
+  }));
+  const signature = Utilities.base64EncodeWebSafe(
+    Utilities.computeRsaSha256Signature(unsigned, account.private_key)).replace(/=+$/, '');
+  const response = UrlFetchApp.fetch('https://oauth2.googleapis.com/token', {
+    method: 'post', muteHttpExceptions: true,
+    payload: { grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: unsigned + '.' + signature },
+  });
+  if (response.getResponseCode() !== 200) {
+    throw new Error('Firebase login failed: ' + response.getContentText().slice(0, 200));
+  }
+  const accessToken = JSON.parse(response.getContentText()).access_token;
+  cache.put('fcm_access_token', accessToken, 50 * 60);
+  return accessToken;
+}
+
+/**
+ * Sends a notification to every phone the user registered. Phones Firebase
+ * reports as gone (app removed, notifications reset) are dropped from the list.
+ * Returns true if at least one phone accepted it.
+ */
+function sendPush_(user, title, body) {
+  const account = pushAccount_();
+  const tokens = list_(user.push_tokens);
+  if (!account || !tokens.length) return false;
+  const url = `https://fcm.googleapis.com/v1/projects/${account.project_id}/messages:send`;
+  const accessToken = fcmAccessToken_(account);
+  const alive = [];
+  let delivered = false;
+
+  tokens.forEach(device => {
+    const response = UrlFetchApp.fetch(url, {
+      method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+      headers: { Authorization: 'Bearer ' + accessToken },
+      payload: JSON.stringify({ message: {
+        token: device,
+        webpush: {
+          notification: { title: title, body: String(body).slice(0, 300),
+                          icon: APP_URL + 'icon-192.png', badge: APP_URL + 'icon-192.png' },
+          fcm_options: { link: APP_URL },
+        },
+      } }),
+    });
+    const code = response.getResponseCode();
+    const text = response.getContentText();
+    if (code === 200) {
+      delivered = true;
+      alive.push(device);
+    } else if (code === 404 || /UNREGISTERED|registration token/i.test(text)) {
+      console.warn('dropping a push device of ' + user.name);
+    } else {
+      alive.push(device);  // a temporary error: keep the phone
+      console.warn('push error ' + code + ': ' + text.slice(0, 200));
+    }
+  });
+
+  if (alive.length !== tokens.length) {
+    user.push_tokens = alive.join(',');
+    writeRow_('Users', user);
+  }
+  return delivered;
 }
 
 function calendar_() {

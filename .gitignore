@@ -1,0 +1,3 @@
+# Firebase service-account keys are secret: they belong only in Apps Script's Script Properties.
+*-firebase-adminsdk-*.json
+*service-account*.json
