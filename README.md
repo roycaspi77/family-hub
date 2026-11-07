@@ -45,6 +45,20 @@ A **rotation slot** is one person (`Noa`) or several people joined with `+` (`Da
 - An admin can **Update time & place** at any time. The people in that slot get an email and an updated calendar invite.
 - Two hours after the event starts it counts as done, and the next event is created for the next slot. **Cancel this one** skips to the next slot.
 
+## 💬 WhatsApp buttons
+WhatsApp's free **click-to-chat** links (`wa.me`) open WhatsApp on the phone with a chat to that member and the message already written. You review it and tap **Send**. Nothing is sent automatically, and no service or account is involved. Each member's phone number is set in **Admin → Edit member**: type it as `054-1234567`, and it's stored as `+97254…`.
+
+| Where | Button | Message |
+|---|---|---|
+| Admin → Open tasks | 💬 Remind | "Hi Noa, a reminder: "Dishes" is due …" |
+| Cards tab (admins) | 💬 Send | The yellow / red card with its explanation |
+| Fun Stuff → Good words (admins) | 💬 Send | The good word, and the prize if there is one |
+| Tasks, on your own pass / switch request | 💬 Nudge | Asks the other person to accept it in the app |
+| Admin → Family | 💬 Chat | Opens a chat with that member |
+| Admin → Personal links | 💬 Send on WhatsApp | That member's personal link |
+
+Without a saved phone number, WhatsApp asks which contact to send to.
+
 ## How it's built
 - **`docs/`:** the screens, a static web app on **GitHub Pages** (`https://roycaspi77.github.io/family-hub/`).
 - **`apps-script/`:** the backend, a Google Apps Script bound to the Google Sheet. It stores the data, sends emails, calendar invites and push notifications, and checks reminders every 5 minutes. The page talks to it as a JSON API (`docs/config.js` holds its `/exec` URL).

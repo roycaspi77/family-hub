@@ -49,7 +49,7 @@ const OPEN_STATUSES = ['assigned', 'in_progress', 'upcoming'];
 
 const HEADERS = {
   Users: ['token', 'name', 'email', 'role', 'notify_email', 'notify_calendar',
-          'allowance', 'notify_push', 'push_tokens'],
+          'allowance', 'notify_push', 'push_tokens', 'phone'],
   Activities: ['id', 'type', 'name', 'rotation', 'current_index', 'penalty_queue',
                'frequency_days', 'next_due', 'place', 'active', 'notify_rules',
                'swap_queue'],
@@ -167,8 +167,8 @@ function getState(token) {
       name: u.name, role: u.role, email: u.email,
       notify_email: bool_(u.notify_email), notify_calendar: bool_(u.notify_calendar),
       notify_push: bool_(u.notify_push), push_devices: list_(u.push_tokens).length,
-      allowance: Number(u.allowance) || 0,
-    } : { name: u.name, role: u.role }),
+      allowance: Number(u.allowance) || 0, phone: String(u.phone || ''),
+    } : { name: u.name, role: u.role, phone: String(u.phone || '') }),  // phones power the WhatsApp buttons
     activities: allActivities.filter(a => admin || bool_(a.active)).map(a => ({
       id: a.id, type: a.type, name: a.name, active: bool_(a.active),
       rotation: list_(a.rotation).join(', '),
@@ -604,6 +604,7 @@ function adminSaveUser(token, input) {
       user = { token: newToken_(), name: name };
     }
     user.email = clean_(input.email, 100);
+    user.phone = intlPhone_(input.phone);
     user.role = input.role === 'admin' ? 'admin' : 'member';
     user.notify_email = !!input.notify_email;
     user.notify_calendar = !!input.notify_calendar;
@@ -1140,6 +1141,17 @@ function hours_(h) { return (Number(h) || 0) * 3600000; }
 function uid_() { return Utilities.getUuid().slice(0, 8); }
 function newToken_() { return Utilities.getUuid().replace(/-/g, ''); }
 function fmt_(d) { return Utilities.formatDate(new Date(d), TZ, 'EEE dd/MM HH:mm'); }
+
+/**
+ * "054-123 4567" / "972541234567" → "+972541234567". Stored with a leading
+ * "+" so Sheets keeps it as text (a bare 054… would lose its leading 0).
+ */
+function intlPhone_(raw) {
+  let digits = String(raw || '').replace(/\D/g, '').slice(0, 15);
+  if (!digits) return '';
+  if (digits.charAt(0) === '0') digits = '972' + digits.slice(1);
+  return '+' + digits;
+}
 
 function int_(v, min, max, fallback) {
   const n = parseInt(v, 10);
