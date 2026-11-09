@@ -96,7 +96,11 @@ function setup() {
  */
 function migrate_() {
   const turns = readAll_('Turns');
-  readAll_('Activities').forEach(a => {
+  const activities = readAll_('Activities');
+  // Rows deleted by hand in the Activities sheet leave their open turns behind: close them.
+  turns.filter(t => t.type === 'task' && t.activity_id && isOpen_(t) && !activities.some(a => a.id === t.activity_id))
+    .forEach(t => { t.status = 'cancelled'; t.note = 'Task was deleted'; writeRow_('Turns', t); });
+  activities.forEach(a => {
     if (a.type === 'fun') {
       if (bool_(a.active)) { a.active = false; writeRow_('Activities', a); }
       return;
