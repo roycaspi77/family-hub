@@ -57,7 +57,7 @@ const HEADERS = {
 // ============================================================================
 
 function setup() {
-  const ss = SpreadsheetApp.getActive();
+  const ss = spreadsheet_();
   Object.keys(HEADERS).forEach(name => {
     const sh = ss.getSheetByName(name) || ss.insertSheet(name);
     if (sh.getLastRow() === 0) {
@@ -702,8 +702,18 @@ function validateSlot_(slot) {
 // ============================================================================
 
 let usersCache_ = null;
+let spreadsheetCache_ = null;
 
-function sheet_(name) { return SpreadsheetApp.getActive().getSheetByName(name); }
+/**
+ * Opened by id rather than used through getActive(): in the editor, getActive()
+ * can carry a stale "active sheet" that makes every call fail with
+ * "Sheet <id> not found".
+ */
+function spreadsheet_() {
+  return spreadsheetCache_ || (spreadsheetCache_ = SpreadsheetApp.openById(SpreadsheetApp.getActive().getId()));
+}
+
+function sheet_(name) { return spreadsheet_().getSheetByName(name); }
 
 function readAll_(name) {
   const values = sheet_(name).getDataRange().getValues();
