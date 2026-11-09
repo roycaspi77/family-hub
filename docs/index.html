@@ -101,7 +101,19 @@ function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.style.display = 'block';
   clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = 'none', 3500);
 }
-function update(state) { S = state; EDITING = false; render(); }
+function update(state) {
+  EDITING = false;
+  // An older backend answers in an older format; say so instead of hanging on "Loading…".
+  if (!state || !state.rotating || !state.dates) {
+    $('#view').innerHTML = '<div class="card">⚠️ The app was updated but its Google backend is still the old version.<br>' +
+      'An admin needs to open Apps Script → <b>Deploy → Manage deployments → ✏️ Edit → New version → Deploy</b>.</div>';
+    return;
+  }
+  S = state;
+  try { render(); } catch (e) {
+    $('#view').innerHTML = `<div class="card">⚠️ Something went wrong showing the app: ${esc(e.message)}</div>`;
+  }
+}
 function load() { if (!EDITING) call('getState').then(update).catch(() => {
   if (!S) $('#view').innerHTML = '<div class="card">Could not load. Make sure you opened your personal link.</div>';
 }); }
