@@ -220,8 +220,7 @@ function taskCard(t) {
       + `<button class="btn sec small" onclick="replaceForm('${t.id}')">Ask to be replaced</button>`;
   }
   if (t.replace_request === 'declined' && mine) state = state || 'The admins declined your replacement request';
-  const done = mine || S.me.isAdmin ? `<div class="actions"><input id="note-${t.id}" placeholder="Note (optional)" style="flex:1;min-width:120px">
-      <button class="btn go" onclick="complete('${t.id}', this)">✓ Done</button></div>` : '';
+  const done = mine || S.me.isAdmin ? doneRow(t) : '';
   return `<div class="card">
     <div class="row"><span class="title">${t.rotating ? '🔁' : '📌'} ${esc(t.title)}</span><span class="muted">${esc(who(t.assignee))}</span></div>
     ${t.rotating ? '' : `<div class="${dueClass(t.due_at)}">Due ${when(t.due_at)} · ${rel(t.due_at)}</div>`}
@@ -229,6 +228,13 @@ function taskCard(t) {
     ${done}
     ${buttons ? `<div class="actions">${buttons}</div>` : ''}
   </div>`;
+}
+
+/** Note box + Done button. Admins also get it on other members' turns (marks it done for them). */
+function doneRow(t) {
+  const forOther = !isMine(t);
+  return `<div class="actions"><input id="note-${t.id}" placeholder="Note (optional)" style="flex:1;min-width:120px">
+      <button class="btn go" onclick="complete('${t.id}', this)">✓ Done${forOther ? ' for ' + esc(who(t.assignee)) : ''}</button></div>`;
 }
 
 function lineChips(a) {
@@ -280,7 +286,8 @@ const VIEWS = {
       <div class="actions"><button class="btn go" onclick="answerOffer('${t.id}', true, this)">Accept</button>
         <button class="btn sec" onclick="answerOffer('${t.id}', false, this)">Decline</button></div></div>`).join('');
     const rotations = activeRotating().map(a => `<div class="card">
-      <div class="title">🔁 ${esc(a.name)}</div><div style="margin-top:4px">${lineChips(a)}</div></div>`).join('');
+      <div class="title">🔁 ${esc(a.name)}</div><div style="margin-top:4px">${lineChips(a)}</div>
+      ${S.me.isAdmin && a.current && !isMine(a.current) ? doneRow(a.current) : ''}</div>`).join('');
     const history = S.history.map(t => `<div class="card">
       <div class="row"><span class="title">${esc(t.title)}</span>
         <span class="${t.status === 'done' ? 'ok' : 'muted'}">${STATUS[t.status] || esc(t.status)}</span></div>
