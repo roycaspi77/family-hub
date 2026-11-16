@@ -203,9 +203,19 @@ function waUrl(name, text) {
 }
 const waBtn = (name, text, label) =>
   `<a class="btn small wa" href="${esc(waUrl(name, text))}" target="_blank" rel="noopener">💬 ${esc(label)}</a>`;
-/** One button per member of a slot ("Dad & Noa" gets two). */
-const waBtns = (slot, textFor, label) => String(slot).split('+').filter(Boolean)
-  .map(n => waBtn(n, textFor(n), String(slot).includes('+') ? label + ' ' + n : label)).join('');
+/**
+ * Same text, no recipient: WhatsApp asks which chat, so it can go to the family group.
+ * (A link can't open a specific group, so this one tap to pick it is the minimum.)
+ */
+const waGroupBtn = text => waBtn('', text, 'Group');
+/** A predefined message: the direct button plus a Group button. */
+const waMsgBtn = (name, text, label) => waBtn(name, text, label) + waGroupBtn(text);
+/** One direct button per member of a slot ("Dad & Noa" gets two), plus one Group button. */
+const waBtns = (slot, textFor, label) => {
+  const names = String(slot).split('+').map(s => s.trim()).filter(Boolean);
+  return names.map(n => waBtn(n, textFor(n), names.length > 1 ? label + ' ' + n : label)).join('')
+    + waGroupBtn(textFor(who(slot)));
+};
 
 const MSG = {
   rotating: (n, t) => `Hi ${n}, it's your turn for "${t.title}" 🧹 When you finish, press Done in Family Hub.`,
@@ -257,7 +267,7 @@ function taskCard(t) {
   if (t.offer_to) {
     state = `🔄 Waiting for ${esc(t.offer_to)} to ${t.offer_kind === 'switch' ? 'switch' : 'take it'}`;
     if (t.offer_by === S.me.name) {
-      buttons += `<button class="btn sec small" onclick="answerOffer('${t.id}', false, this)">Withdraw</button>` + waBtn(t.offer_to, MSG.nudge(t), 'Nudge');
+      buttons += `<button class="btn sec small" onclick="answerOffer('${t.id}', false, this)">Withdraw</button>` + waMsgBtn(t.offer_to, MSG.nudge(t), 'Nudge');
     }
   } else if (t.replace_request === 'pending') {
     state = '🙋 Asked the admins for a replacement';
@@ -307,7 +317,7 @@ function cardItem(c) {
     <div class="row"><span class="title">${icon} ${esc(c.member)}</span><span class="muted">${day(c.created_at)}</span></div>
     <div>${esc(c.explanation)}</div>
     <div class="muted">${c.task ? 'About: ' + esc(c.task) + ' · ' : ''}${c.color === 'red' ? 'Extra turn in: <b>' + esc(c.red_task) + '</b> · ' : ''}${c.color === 'yellow' && c.used ? 'became part of a red card · ' : ''}by ${esc(c.by)}</div>
-    ${S.me.isAdmin ? `<div class="actions">${waBtn(c.member, MSG.card(c), 'Send')}</div>` : ''}
+    ${S.me.isAdmin ? `<div class="actions">${waMsgBtn(c.member, MSG.card(c), 'Send')}</div>` : ''}
   </div>`;
 }
 
@@ -317,7 +327,7 @@ function goodItem(g) {
     <div>${esc(g.explanation)}</div>
     ${g.prize ? `<div style="margin-top:4px">🎁 <b>Prize:</b> ${esc(g.prize)}</div>` : ''}
     <div class="muted">by ${esc(g.by)}</div>
-    ${S.me.isAdmin ? `<div class="actions">${waBtn(g.member, MSG.goodWord(g), 'Send')}</div>` : ''}
+    ${S.me.isAdmin ? `<div class="actions">${waMsgBtn(g.member, MSG.goodWord(g), 'Send')}</div>` : ''}
   </div>`;
 }
 
@@ -406,7 +416,7 @@ const VIEWS = {
     return '<h2>Cards</h2><div class="card"><table class="sum"><tr><td></td><td class="n muted">🟨 now</td><td class="n muted">🟥 total</td>' +
         (S.me.isAdmin ? '<td></td>' : '') + '</tr>' +
         S.cards.summary.map(c => `<tr><td>${esc(c.name)}</td><td class="n">${c.yellow ? '🟨' : '–'}</td><td class="n">${c.red}</td>` +
-          (S.me.isAdmin ? `<td style="text-align:right">${waBtn(c.name, MSG.warning(c.name), 'Warn')}</td>` : '') + '</tr>').join('') +
+          (S.me.isAdmin ? `<td style="text-align:right">${waMsgBtn(c.name, MSG.warning(c.name), 'Warn')}</td>` : '') + '</tr>').join('') +
         '</table><div class="muted" style="margin-top:8px">A second yellow card becomes a red card, which means an extra turn in a task.</div></div>' +
       '<h2>All cards</h2>' + (S.cards.list.map(cardItem).join('') || '<div class="card muted">No cards yet 👏</div>');
   },
