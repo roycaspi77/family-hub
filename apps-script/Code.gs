@@ -14,6 +14,11 @@
  *   extra turn for the member at the front of a task the admin picks.
  * Fun: one-off dates (name, members, time, place), good words (every 3rd
  *   comes with a prize) and a monthly allowance paid on the 1st.
+ * Supermarket: one shared shopping list everyone can add to, edit and delete
+ *   from. In the store, items are crossed out and "Finish shopping" marks them
+ *   bought. The buying history (GroceryCatalog) powers autocomplete, auto-sorting
+ *   by category, the usuals and "running low?" suggestions. Members' items in
+ *   the admins' "wish" categories (e.g. sweets) wait for an admin's OK.
  *
  * Nothing is sent automatically. The app shows everything; admins (and members,
  * for their requests) send WhatsApp messages themselves from the app.
@@ -25,7 +30,8 @@
  *
  * Sheets (created / upgraded by setup()):
  *   Users, Activities (rotating tasks), Turns (task turns, one-time tasks and
- *   dates), Cards, GoodWords. Columns from older versions are left in place.
+ *   dates), Cards, GoodWords, Groceries, GroceryCatalog, Settings. Columns from
+ *   older versions are left in place.
  *
  * Access: this script is only the backend (a JSON API). The screens are a
  * static page on GitHub Pages (APP_URL) that POSTs here. Each member opens a
@@ -50,7 +56,23 @@ const HEADERS = {
   Cards: ['id', 'member', 'color', 'explanation', 'task_id', 'red_task_id',
           'used', 'created_at', 'by'],
   GoodWords: ['id', 'member', 'explanation', 'prize', 'created_at', 'by'],
+  Groceries: ['id', 'name', 'qty', 'category', 'urgent', 'status', 'added_by', 'added_at',
+              'updated_by', 'updated_at', 'checked_by', 'bought_at'],
+  GroceryCatalog: ['key', 'name', 'category', 'times_bought', 'first_bought', 'last_bought', 'snoozed_until'],
+  Settings: ['key', 'value'],
 };
+
+// ---------- Supermarket ----------
+// Groceries.status: needed → checked (in the cart) → bought (Finish shopping).
+// A member's item in a "wish" category waits for an admin: wish → needed / declined.
+// Deleted items are kept as "deleted" so they can be restored (Undo).
+const GROCERY_ACTIVE = ['needed', 'checked', 'wish'];
+const DEFAULT_CATEGORIES = ['🥬 Fruit & vegetables', '🍞 Bakery', '🥛 Dairy & eggs', '🥩 Meat & fish',
+  '🧀 Deli & salads', '🥫 Pantry', '🍫 Snacks & sweets', '🥤 Drinks', '🧊 Frozen',
+  '🧴 Cleaning & home', '🧼 Toiletries', '📦 Other'];
+const DEFAULT_WISH_CATEGORIES = ['🍫 Snacks & sweets'];
+const GROCERY_HISTORY_DAYS = 90;   // bought / deleted rows older than this are removed on Finish shopping
+const DAY_MS = 86400000;
 
 // ============================================================================
 // Setup / upgrade (run from the Apps Script editor; safe to run again)
@@ -79,6 +101,9 @@ function setup() {
       role: 'admin', allowance: 0,
     });
   }
+
+  if (getSetting_('grocery_categories') === null) saveSetting_('grocery_categories', DEFAULT_CATEGORIES.join('\n'));
+  if (getSetting_('grocery_wish_categories') === null) saveSetting_('grocery_wish_categories', DEFAULT_WISH_CATEGORIES.join('\n'));
 
   // Nothing runs on a timer any more.
   ScriptApp.getProjectTriggers()
@@ -134,6 +159,8 @@ const API = {
   adminCreateOneTimeTask, adminEditTurn, adminSkipTurn, adminAnswerReplace,
   adminSaveDate, adminDeleteDate, adminGiveCard, adminGiveGoodWord,
   adminSaveUser, adminGetLinks,
+  addGrocery, editGrocery, deleteGrocery, restoreGrocery, checkGrocery, finishShopping,
+  snoozeGrocery, adminAnswerWish, adminSaveGrocerySettings,
 };
 
 /** The page sends text/plain JSON {fn, args} so the browser skips a CORS preflight. */
@@ -215,6 +242,7 @@ function getState(token) {
     },
     allowance: users_().filter(u => admin || u.name === me.name)
       .map(u => ({ name: u.name, amount: Number(u.allowance) || 0 })),
+    groceries: groceryState_(now),
   };
 }
 
@@ -595,6 +623,254 @@ function adminGetLinks(token) {
 }
 
 // ============================================================================
+// Supermarket (shared shopping list; every member can add, edit and delete)
+// ============================================================================
+
+function groceryState_(now) {
+  const items = readAll_('Groceries')
+    .filter(g => GROCERY_ACTIVE.indexOf(g.status) >= 0 ||
+                 (g.status === 'declined' && ms_(g.updated_at) > now - 3 * DAY_MS))
+    .map(g => ({
+      id: g.id, name: String(g.name), qty: String(g.qty || ''), category: String(g.category || ''),
+      urgent: bool_(g.urgent), status: g.status, added_by: g.added_by, added_at: ms_(g.added_at),
+      updated_by: g.updated_by, checked_by: g.checked_by || '',
+    }));
+  const catalog = readAll_('GroceryCatalog')
+    .map(c => ({
+      key: String(c.key), name: String(c.name), category: String(c.category || ''),
+      count: Number(c.times_bought) || 0, first: ms_(c.first_bought), last: ms_(c.last_bought),
+      snoozed: ms_(c.snoozed_until),
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 500);
+  return { items: items, catalog: catalog, categories: groceryCategories_(), wishCategories: wishCategories_() };
+}
+
+/** Adds an item. If it's already on the list, nothing is added (an urgent add makes it urgent). */
+function addGrocery(token, input) {
+  return withLock_(() => {
+    const me = auth_(token);
+    const name = clean_(input.name, 60);
+    if (!name) throw new Error('Write what we need.');
+    const key = groceryKey_(name);
+    const existing = readAll_('Groceries').find(g => GROCERY_ACTIVE.indexOf(g.status) >= 0 && groceryKey_(g.name) === key);
+    if (existing) {
+      if (input.urgent === true && !bool_(existing.urgent)) {
+        existing.urgent = true;
+        touch_(existing, me);
+        writeRow_('Groceries', existing);
+      }
+      return getState(token);
+    }
+    const category = validCategory_(input.category);
+    const wish = !isAdmin_(me) && wishCategories_().indexOf(category) >= 0;
+    const now = new Date();
+    writeRow_('Groceries', {
+      id: uid_(), name: name, qty: clean_(input.qty, 40), category: category, urgent: input.urgent === true,
+      status: wish ? 'wish' : 'needed', added_by: me.name, added_at: now, updated_by: me.name, updated_at: now,
+    });
+    rememberGrocery_(name, category);
+    return getState(token);
+  });
+}
+
+function editGrocery(token, id, input) {
+  return withLock_(() => {
+    const me = auth_(token);
+    const item = activeGrocery_(id);
+    const name = clean_(input.name, 60);
+    if (!name) throw new Error('Write what we need.');
+    item.name = name;
+    item.qty = clean_(input.qty, 40);
+    item.category = validCategory_(input.category);
+    item.urgent = input.urgent === true;
+    touch_(item, me);
+    writeRow_('Groceries', item);
+    rememberGrocery_(name, item.category);
+    return getState(token);
+  });
+}
+
+function deleteGrocery(token, id) {
+  return withLock_(() => {
+    const me = auth_(token);
+    const item = activeGrocery_(id);
+    item.status = 'deleted';
+    touch_(item, me);
+    writeRow_('Groceries', item);
+    return getState(token);
+  });
+}
+
+/** Undo of a delete. */
+function restoreGrocery(token, id) {
+  return withLock_(() => {
+    const me = auth_(token);
+    const item = readAll_('Groceries').find(g => g.id === id && g.status === 'deleted');
+    if (!item) throw new Error('Item not found.');
+    const key = groceryKey_(item.name);
+    if (!readAll_('Groceries').some(g => GROCERY_ACTIVE.indexOf(g.status) >= 0 && groceryKey_(g.name) === key)) {
+      item.status = !isAdmin_(me) && wishCategories_().indexOf(String(item.category)) >= 0 ? 'wish' : 'needed';
+      item.checked_by = '';
+      touch_(item, me);
+      writeRow_('Groceries', item);
+    }
+    return getState(token);
+  });
+}
+
+/** In the store: cross an item out (checked = true) or put it back on the list. */
+function checkGrocery(token, id, checked) {
+  return withLock_(() => {
+    const me = auth_(token);
+    const item = activeGrocery_(id);
+    if (item.status === 'wish') throw new Error('This wish still needs a parent\'s OK.');
+    item.status = checked ? 'checked' : 'needed';
+    item.checked_by = checked ? me.name : '';
+    touch_(item, me);
+    writeRow_('Groceries', item);
+    return getState(token);
+  });
+}
+
+/** Everything crossed out is bought; the rest stays for next time. Updates the buying history. */
+function finishShopping(token) {
+  return withLock_(() => {
+    const me = auth_(token);
+    const rows = readAll_('Groceries');
+    const bought = rows.filter(g => g.status === 'checked');
+    if (!bought.length) throw new Error('Nothing is crossed out yet.');
+    const now = new Date();
+    bought.forEach(g => {
+      g.status = 'bought';
+      g.bought_at = now;
+      touch_(g, me);
+      writeRow_('Groceries', g);
+    });
+
+    const catalog = readAll_('GroceryCatalog');
+    const seen = {};
+    bought.forEach(g => {
+      const key = groceryKey_(g.name);
+      if (seen[key]) return;
+      seen[key] = true;
+      const c = catalog.find(x => String(x.key) === key) ||
+                { key: key, name: String(g.name), category: g.category, times_bought: 0 };
+      // Two trips on the same day (forgot something) count as one.
+      if (!(ms_(c.last_bought) > now.getTime() - 12 * 3600000)) c.times_bought = (Number(c.times_bought) || 0) + 1;
+      if (!c.first_bought) c.first_bought = now;
+      c.last_bought = now;
+      c.snoozed_until = '';
+      writeRow_('GroceryCatalog', c);
+    });
+
+    // Keep the sheet small: drop old finished rows (bottom-up so row numbers stay valid).
+    const cutoff = now.getTime() - GROCERY_HISTORY_DAYS * DAY_MS;
+    const sh = sheet_('Groceries');
+    rows.filter(g => GROCERY_ACTIVE.indexOf(g.status) < 0 && ms_(g.updated_at) !== null && ms_(g.updated_at) < cutoff)
+      .map(g => g._row).sort((a, b) => b - a)
+      .forEach(r => sh.deleteRow(r));
+    return getState(token);
+  });
+}
+
+/** "Running low?" suggestion dismissed: don't suggest it again for about one buying interval. */
+function snoozeGrocery(token, key) {
+  return withLock_(() => {
+    auth_(token);
+    const c = readAll_('GroceryCatalog').find(x => String(x.key) === String(key));
+    if (!c) throw new Error('Item not found.');
+    const count = Number(c.times_bought) || 0;
+    const every = count > 1 ? (ms_(c.last_bought) - ms_(c.first_bought)) / (count - 1) : 7 * DAY_MS;
+    c.snoozed_until = new Date(Date.now() + Math.max(3 * DAY_MS, every));
+    writeRow_('GroceryCatalog', c);
+    return getState(token);
+  });
+}
+
+function adminAnswerWish(token, id, approve) {
+  return withLock_(() => {
+    const me = auth_(token);
+    requireAdmin_(me);
+    const item = readAll_('Groceries').find(g => g.id === id && g.status === 'wish');
+    if (!item) throw new Error('This wish was already answered.');
+    item.status = approve ? 'needed' : 'declined';
+    touch_(item, me);
+    writeRow_('Groceries', item);
+    return getState(token);
+  });
+}
+
+/** categories: the store's walking order. wishCategories: members' items there need an admin's OK. */
+function adminSaveGrocerySettings(token, input) {
+  return withLock_(() => {
+    requireAdmin_(auth_(token));
+    const categories = [];
+    (Array.isArray(input.categories) ? input.categories : []).forEach(c => {
+      const name = clean_(c, 40);
+      if (name && categories.indexOf(name) < 0) categories.push(name);
+    });
+    if (!categories.length) throw new Error('Add at least one category.');
+    const wish = (Array.isArray(input.wishCategories) ? input.wishCategories : [])
+      .map(c => clean_(c, 40)).filter(c => categories.indexOf(c) >= 0);
+    saveSetting_('grocery_categories', categories.slice(0, 40).join('\n'));
+    saveSetting_('grocery_wish_categories', wish.join('\n'));
+    return getState(token);
+  });
+}
+
+function groceryKey_(name) { return String(name || '').trim().toLowerCase().replace(/\s+/g, ' '); }
+
+function activeGrocery_(id) {
+  const item = readAll_('Groceries').find(g => g.id === id && GROCERY_ACTIVE.indexOf(g.status) >= 0);
+  if (!item) throw new Error('This item is no longer on the list.');
+  return item;
+}
+
+function touch_(item, user) {
+  item.updated_by = user.name;
+  item.updated_at = new Date();
+}
+
+/** A category from the admin's list, or '' (shown as "Not sorted"). */
+function validCategory_(category) {
+  const c = clean_(category, 40);
+  return groceryCategories_().indexOf(c) >= 0 ? c : '';
+}
+
+/** Remembers the latest spelling and category of an item, for suggestions and auto-sorting. */
+function rememberGrocery_(name, category) {
+  const key = groceryKey_(name);
+  const c = readAll_('GroceryCatalog').find(x => String(x.key) === key) || { key: key, times_bought: 0 };
+  c.name = name;
+  if (category || !c.category) c.category = category;
+  writeRow_('GroceryCatalog', c);
+}
+
+function groceryCategories_() {
+  const saved = getSetting_('grocery_categories');
+  return saved === null ? DEFAULT_CATEGORIES.slice() : saved.split('\n').map(s => s.trim()).filter(Boolean);
+}
+
+function wishCategories_() {
+  const saved = getSetting_('grocery_wish_categories');
+  return saved === null ? DEFAULT_WISH_CATEGORIES.slice() : saved.split('\n').map(s => s.trim()).filter(Boolean);
+}
+
+function getSetting_(key) {
+  const sh = sheet_('Settings');
+  if (!sh) return null;
+  const row = readAll_('Settings').find(r => r.key === key);
+  return row ? String(row.value) : null;
+}
+
+function saveSetting_(key, value) {
+  const row = readAll_('Settings').find(r => r.key === key) || { key: key };
+  row.value = value;
+  writeRow_('Settings', row);
+}
+
+// ============================================================================
 // Rotation line
 // ============================================================================
 
@@ -720,7 +996,9 @@ function spreadsheet_() {
 function sheet_(name) { return spreadsheet_().getSheetByName(name); }
 
 function readAll_(name) {
-  const values = sheet_(name).getDataRange().getValues();
+  const sh = sheet_(name);
+  if (!sh) return [];   // a sheet this version added, before setup() ran
+  const values = sh.getDataRange().getValues();
   const header = values.shift() || [];
   return values
     .map((row, i) => {

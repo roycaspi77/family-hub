@@ -68,8 +68,28 @@
   nav button.on { color:var(--accent); font-weight:600; }
   nav .ic { display:block; font-size:20px; }
   .badge { background:var(--bad); color:#fff; border-radius:999px; font-size:11px; padding:0 6px; margin-left:2px; }
+  .badge.n { background:var(--muted); }
   #toast { position:fixed; left:16px; right:16px; bottom:84px; background:#222; color:#fff; padding:10px 14px;
            border-radius:10px; display:none; z-index:5; }
+  #toast button { margin-left:12px; background:none; border:1px solid #fff; color:#fff; border-radius:8px; padding:2px 12px; font:inherit; }
+  /* Supermarket */
+  .addrow { display:flex; gap:8px; align-items:center; }
+  .addrow input { flex:1; min-width:0; }
+  .addrow select { width:auto; max-width:50%; }
+  .gcat { font-size:13px; font-weight:600; color:var(--muted); margin:12px 0 2px; }
+  .gcat:first-child { margin-top:0; }
+  .gi { display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--line); }
+  .gcat + .gi, .gi:first-child { border-top:0; }
+  .gi .gn { flex:1; min-width:0; cursor:pointer; overflow-wrap:anywhere; }
+  .gi.done .gn bdi:first-child { text-decoration:line-through; color:var(--muted); }
+  .ck { width:30px; height:30px; flex-shrink:0; border-radius:50%; border:2px solid var(--muted); background:none;
+        color:#fff; font-size:16px; line-height:1; cursor:pointer; padding:0; }
+  .gi.done .ck { border-color:var(--ok); background:var(--ok); }
+  .tag-urgent { color:var(--bad); font-size:13px; font-weight:600; white-space:nowrap; }
+  button.chip { font:inherit; font-size:14px; background:var(--card); color:var(--ink); cursor:pointer; padding:4px 11px; }
+  .chip.low { border-color:var(--warn); }
+  .chip .x { border:0; background:none; color:var(--muted); cursor:pointer; padding:0 0 0 6px; font:inherit; }
+  details summary { cursor:pointer; color:var(--muted); font-size:14px; margin-top:12px; }
 </style>
 </head>
 <body>
@@ -80,6 +100,9 @@
 
 <script>
 let TOKEN = '', S = null, TAB = 'tasks', EDITING = false;
+// Supermarket: GPENDING = shopping-list calls still in flight (their changes are already shown),
+// VER = bumped on each such change so an older auto-refresh can't paint stale data over it.
+let GPENDING = 0, VER = 0, LAST_LOAD = 0;
 const $ = sel => document.querySelector(sel);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
   c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
@@ -97,9 +120,14 @@ function call(fn, ...args) {
     .then(res => { if (!res.ok) throw new Error(res.error); return res.data; })
     .catch(e => { toast(e.message === 'Failed to fetch' ? 'No connection to the server' : e.message); throw e; });
 }
-function toast(msg) {
+function toast(msg, undo) {
   const t = $('#toast'); t.textContent = msg; t.style.display = 'block';
-  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = 'none', 3500);
+  if (undo) {
+    const b = document.createElement('button'); b.textContent = 'Undo';
+    b.onclick = () => { t.style.display = 'none'; undo(); };
+    t.appendChild(b);
+  }
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = 'none', undo ? 6000 : 3500);
 }
 function update(state) {
   EDITING = false;
@@ -114,9 +142,17 @@ function update(state) {
     $('#view').innerHTML = `<div class="card">⚠️ Something went wrong showing the app: ${esc(e.message)}</div>`;
   }
 }
-function load() { if (!EDITING) call('getState').then(update).catch(() => {
-  if (!S) $('#view').innerHTML = '<div class="card">Could not load. Make sure you opened your personal link.</div>';
-}); }
+function load() {
+  if (EDITING || GPENDING) return;
+  const v = VER;
+  LAST_LOAD = Date.now();
+  call('getState').then(s => {
+    // Don't paint over a form the user opened, or over a newer list change, meanwhile.
+    if (!S || (v === VER && !GPENDING && !EDITING)) update(s);
+  }).catch(() => {
+    if (!S) $('#view').innerHTML = '<div class="card">Could not load. Make sure you opened your personal link.</div>';
+  });
+}
 
 // ---------- formatting ----------
 function when(ms) {
@@ -187,6 +223,9 @@ const MSG = {
   goodWord: g => `🌟 ${g.member}, a good word for you: ${g.explanation}` +
     (g.prize ? `\n🎁 That's ${S.goodWords.perPrize} good words — your prize: ${g.prize}` : ''),
   nudge: t => `Hi ${t.offer_to}, I asked you in Family Hub to ${t.offer_kind === 'switch' ? 'switch turns with me for' : 'take'} "${t.title}". Can you accept it in the app? 🙏`,
+  going: () => `🛒 I'm going to the supermarket soon. Need anything? Add it to the shopping list in Family Hub 👉 ${location.origin + location.pathname}`,
+  list: groups => '🛒 Shopping list\n' + groups.map(([cat, items]) => `\n${cat || 'Not sorted'}\n` +
+    items.map(i => `• ${i.name}${i.qty ? ' – ' + i.qty : ''}${i.urgent ? ' ⚡' : ''}`).join('\n')).join('\n'),
 };
 const remindBtns = t => waBtns(t.assignee, n => t.rotating ? MSG.rotating(n, t) : MSG.oneTime(n, t), 'Remind');
 
@@ -194,11 +233,20 @@ const remindBtns = t => waBtns(t.assignee, n => t.rotating ? MSG.rotating(n, t) 
 function render() {
   $('#who').textContent = S.me.name + (S.me.isAdmin ? ' · admin' : '');
   const mine = openTasks().filter(isMine).length + S.offers.length;
-  const tabs = [['tasks','🧹','Tasks', mine], ['cards','🟨','Cards'], ['fun','🎉','Fun Stuff']];
+  const g = S.groceries;
+  const onList = g ? g.items.filter(i => i.status === 'needed').length : 0;
+  const wishes = g && S.me.isAdmin ? g.items.filter(i => i.status === 'wish').length : 0;
+  const tabs = [['tasks','🧹','Tasks', mine], ['shop','🛒','Shopping', wishes, onList], ['cards','🟨','Cards'], ['fun','🎉','Fun Stuff']];
   if (S.me.isAdmin) tabs.push(['admin','⚙️','Admin', S.replaceRequests.length]);
-  $('#nav').innerHTML = tabs.map(([id, ic, label, n]) =>
-    `<button class="${TAB === id ? 'on' : ''}" onclick="go('${id}')"><span class="ic">${ic}</span>${label}${n ? `<span class="badge">${n}</span>` : ''}</button>`).join('');
+  $('#nav').innerHTML = tabs.map(([id, ic, label, n, count]) =>
+    `<button class="${TAB === id ? 'on' : ''}" onclick="go('${id}')"><span class="ic">${ic}</span>${label}` +
+    `${count ? `<span class="badge n">${count}</span>` : ''}${n ? `<span class="badge">${n}</span>` : ''}</button>`).join('');
+  // Auto-refresh redraws the screen: keep the cursor in the field the user is typing in.
+  const a = document.activeElement;
+  const keep = a && a.id && /^(INPUT|TEXTAREA)$/.test(a.tagName) ? { id: a.id, at: a.selectionStart } : null;
   $('#view').innerHTML = VIEWS[TAB]();
+  const el = keep && document.getElementById(keep.id);
+  if (el) { el.focus(); try { el.setSelectionRange(keep.at, keep.at); } catch (e) {} }
 }
 function go(tab) { TAB = tab; EDITING = false; render(); window.scrollTo(0, 0); }
 
@@ -299,6 +347,61 @@ const VIEWS = {
       (otherOneTime.length ? '<h2>Other one-time tasks</h2>' + otherOneTime.map(taskCard).join('') : '') +
       (history ? '<h2>History</h2>' + history : '');
   },
+  shop() {
+    const g = S.groceries;
+    if (!g) return '<div class="card">⚠️ The shopping list needs the new Google backend. An admin needs to paste the new Code.gs, run <b>setup</b>, and deploy a new version.</div>';
+    GREFS = [];
+    const cart = g.items.filter(i => i.status === 'checked');
+    const wishes = g.items.filter(i => i.status === 'wish');
+    const declined = g.items.filter(i => i.status === 'declined');
+    const groups = neededGroups();
+    const count = groups.reduce((n, gr) => n + gr[1].length, 0);
+    const low = lowSuggestions();
+    const usual = usuals(low);
+
+    const addCard = `<div class="card">
+      <div class="addrow"><input id="g_name" list="g_names" dir="auto" autocomplete="off" enterkeyhint="done"
+          placeholder="What do we need? (apples, milk…)" value="${esc(DRAFT.name)}"
+          oninput="DRAFT.name=this.value;groceryHint()" onkeydown="if(event.key==='Enter')addGrocery()">
+        <button class="btn go" onclick="addGrocery()">Add</button></div>
+      <div class="addrow" style="margin-top:8px"><input id="g_qty" dir="auto" placeholder="How much? (optional)" value="${esc(DRAFT.qty)}"
+          oninput="DRAFT.qty=this.value" onkeydown="if(event.key==='Enter')addGrocery()">
+        <select id="g_cat" onchange="DRAFT.cat=this.value;groceryHint()"><option value="auto">Auto category</option>
+          ${g.categories.map(c => `<option ${DRAFT.cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
+      <label class="check"><input id="g_urgent" type="checkbox" ${DRAFT.urgent ? 'checked' : ''} onchange="DRAFT.urgent=this.checked"> ⚡ Urgent: we're out of it</label>
+      <div id="g_hint" class="muted">${hintHtml()}</div>
+      <datalist id="g_names">${g.catalog.map(c => `<option value="${esc(c.name)}">`).join('')}</datalist>
+      ${low.length ? `<div class="muted" style="margin-top:10px">🔔 Running low? Tap to add</div><div>${low.map(l => `<span class="chip low">
+          <button class="x" style="padding:0;color:var(--ink)" onclick="quickAdd(${gref(l.c.key)})">+ <bdi>${esc(l.c.name)}</bdi></button>
+          <span class="muted">${Math.round(l.since)}d</span>
+          <button class="x" title="Not needed now" onclick="snooze(${gref(l.c.key)})">✕</button></span>`).join('')}</div>` : ''}
+      <details ${DRAFT.usualsOpen ? 'open' : ''} ontoggle="DRAFT.usualsOpen=this.open"><summary>⭐ Our usuals</summary>
+        <div style="margin-top:6px">${usual.length
+          ? usual.map(c => `<button class="chip" onclick="quickAdd(${gref(c.key)})">+ <bdi>${esc(c.name)}</bdi></button>`).join('')
+          : '<span class="muted">The things we buy most show up here after a few shopping trips.</span>'}</div></details>
+    </div>`;
+
+    const wishCard = wishes.length ? '<h2>🙋 Wishes · waiting for a parent\'s OK</h2><div class="card">' + wishes.map(i => `<div class="gi">
+        <div class="gn"><bdi>${esc(i.name)}</bdi>${i.qty ? ` · <bdi>${esc(i.qty)}</bdi>` : ''}<div class="muted">${esc(i.added_by)} · ${rel(i.added_at)}</div></div>
+        ${S.me.isAdmin ? `<button class="btn go small" ${tmpAttr(i)} onclick="answerWish('${i.id}', true)">OK</button>
+          <button class="btn sec small" ${tmpAttr(i)} onclick="answerWish('${i.id}', false)">Not now</button>`
+        : i.added_by === S.me.name ? `<button class="btn sec small icon" title="Delete" ${tmpAttr(i)} onclick="deleteItem('${i.id}')">🗑</button>` : ''}
+      </div>`).join('') + '</div>' : '';
+
+    const list = count
+      ? '<div class="card">' + groups.map(([cat, items]) => `<div class="gcat">${esc(cat || 'Not sorted')}</div>` + items.map(itemRow).join('')).join('') + '</div>'
+      : '<div class="card muted">The list is empty 🎉 Took the last of something? Add it above.</div>';
+
+    const cartCard = cart.length ? `<h2>In the cart · ${cart.length}</h2><div class="card">${cart.map(itemRow).join('')}
+        <div class="actions"><button class="btn go" onclick="finishShopping(this)">✓ Finish shopping</button></div>
+        <div class="muted" style="margin-top:6px">Marks the crossed-out items as bought. Anything not crossed out stays on the list.</div></div>` : '';
+
+    return addCard + wishCard +
+      `<h2>Shopping list${count ? ' · ' + count : ''}</h2>
+      <div class="actions" style="margin:0 0 10px">${waBtn('', MSG.going(), "I'm going shopping")}${count ? waBtn('', MSG.list(groups), 'Send the list') : ''}</div>` +
+      list + cartCard +
+      (declined.length ? `<div class="muted" style="margin-top:12px">Not this time: ${declined.map(i => `<bdi>${esc(i.name)}</bdi> (${esc(i.added_by)})`).join(', ')}</div>` : '');
+  },
   cards() {
     return '<h2>Cards</h2><div class="card"><table class="sum"><tr><td></td><td class="n muted">🟨 now</td><td class="n muted">🟥 total</td>' +
         (S.me.isAdmin ? '<td></td>' : '') + '</tr>' +
@@ -366,7 +469,8 @@ const VIEWS = {
         <button class="btn sec" onclick="giveCard()">🟨 Yellow card</button>
         <button class="btn sec" onclick="giveGoodWord()">🌟 Good word</button>
         <button class="btn sec" onclick="editUser()">+ Add member</button>
-        <button class="btn sec" onclick="showLinks()">Personal links</button></div>` +
+        <button class="btn sec" onclick="showLinks()">Personal links</button>
+        ${S.groceries ? '<button class="btn sec" onclick="grocerySettingsForm()">🛒 Shopping categories</button>' : ''}</div>` +
       '<h2>Rotating tasks</h2>' + (rotating || '<div class="card muted">None yet.</div>') +
       '<h2>One-time tasks</h2>' + (oneTime || '<div class="card muted">None open.</div>') +
       '<h2>Family</h2>' + S.users.map((u, i) => `<div class="card row"><div><span class="title">${esc(u.name)}</span>
@@ -544,6 +648,200 @@ function showLinks() {
   });
 }
 
+// ---------- supermarket ----------
+// What's typed in the add box survives the auto-refresh redraws.
+const DRAFT = { name: '', qty: '', cat: 'auto', urgent: false, usualsOpen: false };
+// Catalog keys can hold any text; buttons refer to them by index instead of quoting them.
+let GREFS = [];
+const gref = key => GREFS.push(key) - 1;
+const gKey = s => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+const ACTIVE = ['needed', 'checked', 'wish'];
+const onListItem = key => S.groceries.items.find(i => ACTIVE.includes(i.status) && gKey(i.name) === key);
+const catalogItem = key => S.groceries.catalog.find(c => c.key === key);
+const tmpAttr = i => String(i.id).startsWith('tmp') ? 'disabled' : '';
+
+/** Items still to buy, grouped in the store's category order; urgent ones first in each group. */
+function neededGroups() {
+  const cats = S.groceries.categories;
+  const rank = c => { const i = cats.indexOf(c); return i < 0 ? cats.length : i; };
+  const items = S.groceries.items.filter(i => i.status === 'needed')
+    .sort((a, b) => rank(a.category) - rank(b.category) || b.urgent - a.urgent || a.added_at - b.added_at);
+  const groups = [];
+  items.forEach(i => {
+    const cat = cats.includes(i.category) ? i.category : '';
+    const last = groups[groups.length - 1];
+    if (last && last[0] === cat) last[1].push(i); else groups.push([cat, [i]]);
+  });
+  return groups;
+}
+
+function itemRow(i) {
+  const done = i.status === 'checked';
+  return `<div class="gi ${done ? 'done' : ''}">
+    <button class="ck" ${tmpAttr(i)} title="${done ? 'Put back on the list' : 'In the cart'}" onclick="checkItem('${i.id}', ${!done})">${done ? '✓' : ''}</button>
+    <div class="gn" ${tmpAttr(i) ? '' : `onclick="groceryForm('${i.id}')"`}><bdi>${esc(i.name)}</bdi>${i.qty ? ` · <bdi>${esc(i.qty)}</bdi>` : ''}${i.urgent ? ' <span class="tag-urgent">⚡ urgent</span>' : ''}
+      <div class="muted">${esc(i.added_by)}${i.added_at ? ' · ' + rel(i.added_at) : ''}${done && i.checked_by ? ' · 🛒 ' + esc(i.checked_by) : ''}</div></div>
+    <button class="btn sec small icon" title="Delete" ${tmpAttr(i)} onclick="deleteItem('${i.id}')">🗑</button>
+  </div>`;
+}
+
+/** Bought at least 3 times, not on the list, and it's been longer than usual since the last time. */
+function lowSuggestions() {
+  const now = Date.now();
+  return S.groceries.catalog.map(c => {
+    if (c.count < 3 || !c.first || !c.last || (c.snoozed && c.snoozed > now) || onListItem(c.key)) return null;
+    const every = (c.last - c.first) / (c.count - 1) / 86400000;
+    const since = (now - c.last) / 86400000;
+    return every >= 2 && every <= 60 && since >= every ? { c: c, every: every, since: since } : null;
+  }).filter(Boolean).sort((a, b) => b.since / b.every - a.since / a.every).slice(0, 8);
+}
+
+/** The most-bought items that aren't on the list (or already suggested as running low). */
+function usuals(low) {
+  return S.groceries.catalog
+    .filter(c => c.count >= 2 && !onListItem(c.key) && !low.some(l => l.c.key === c.key))
+    .slice(0, 18);
+}
+
+// Category guess for items the family hasn't bought before (English + Hebrew; the longest match wins).
+const GUESS = {
+  '🥬 Fruit & vegetables': 'apple|banana|orange|lemon|tomato|cucumber|potato|onion|garlic|carrot|pepper|lettuce|avocado|grape|strawberr|melon|pear|peach|mango|zucchini|eggplant|cabbage|parsley|coriander|cilantro|dill|mint|mushroom|corn|fruit|vegetable|clementine|תפוח|בננ|תפוז|לימון|עגבני|מלפפון|תפוחי אדמה|בצל|שום|גזר|פלפל|חסה|אבוקדו|ענב|תות|מלון|אבטיח|אגס|אפרסק|מנגו|קישוא|חציל|כרוב|פטרוזיליה|כוסברה|שמיר|נענע|פטרי|תירס|בטטה|פירות|ירקות|קלמנטינ',
+  '🍞 Bakery': 'bread|pita|roll|bagel|baguette|challah|bun|cake|croissant|לחם|פיתה|פיתות|לחמני|בייגל|באגט|חלה|חלות|עוגה|קרואסון',
+  '🥛 Dairy & eggs': 'milk|egg|cheese|yogurt|yoghurt|butter|cream|cottage|labane|חלב|ביצ|גבינ|יוגורט|חמאה|שמנת|קוטג|לבנה|מעדן|שוקו|פודינג',
+  '🥩 Meat & fish': 'chicken|beef|meat|fish|salmon|steak|turkey|schnitzel|mince|עוף|בשר|דג|סלמון|סטייק|הודו|שניצל|טחון|כרעיים|חזה|פרגית|קבב',
+  '🧀 Deli & salads': 'salami|ham|pastrami|hummus|tahini|salad|נקניק|פסטרמה|חומוס|טחינה|סלט|מטבוחה',
+  '🥫 Pantry': 'rice|pasta|spaghetti|flour|sugar|salt|olive oil|oil|vinegar|sauce|ketchup|mayo|mustard|spice|cereal|cornflakes|honey|jam|beans|lentils|tuna|coffee|tea|oats|אורז|פסטה|ספגטי|קמח|סוכר|מלח|שמן|חומץ|רוטב|קטשופ|מיונז|חרדל|תבלין|דגני|קורנפלקס|דבש|ריבה|שעועית|עדשים|טונה|שימורי|קפה|שיבולת',
+  '🍫 Snacks & sweets': 'chocolate|candy|candies|chips|snack|cookie|biscuit|bamba|bisli|ice cream|gum|wafer|pretzel|שוקולד|ממתק|סוכריות|צ\'יפס|חטיף|עוגיות|ביסקוויט|במבה|ביסלי|גלידה|מסטיק|ופל|בייגלה|דובונים',
+  '🥤 Drinks': 'water|juice|soda|cola|beer|wine|sprite|מים|מיץ|סודה|קולה|בירה|יין|משקה|פטל|שתייה',
+  '🧊 Frozen': 'frozen|pizza|peas|קפוא|פיצה|אפונה|שניצלונים|בורקס',
+  '🧴 Cleaning & home': 'detergent|soap|dish|bleach|toilet paper|paper towel|napkin|trash bag|foil|sponge|softener|אקונומיקה|סבון|נוזל כלים|נייר טואלט|מגבות נייר|מפיות|שקיות זבל|נייר כסף|אלומיניום|ספוג|מרכך כביסה|אבקת כביסה|ג\'ל כביסה',
+  '🧼 Toiletries': 'shampoo|toothpaste|toothbrush|deodorant|conditioner|diaper|wipes|pads|razor|שמפו|משחת שיניים|מברשת שיניים|דאודורנט|מרכך שיער|טיטול|חיתול|מגבונים|תחבושות|סכין גילוח',
+};
+function guessCategory(name) {
+  const n = gKey(name);
+  let best = '', len = 0;
+  Object.keys(GUESS).forEach(cat => GUESS[cat].split('|').forEach(w => {
+    if (w.length > len && n.includes(w)) { best = cat; len = w.length; }
+  }));
+  return S.groceries.categories.includes(best) ? best : '';
+}
+/** Where an item goes: the category it had before, else a guess from its name. */
+function autoCategory(name) {
+  const c = catalogItem(gKey(name));
+  return c && S.groceries.categories.includes(c.category) ? c.category : guessCategory(name);
+}
+const draftCategory = name => DRAFT.cat !== 'auto' ? DRAFT.cat : autoCategory(name);
+const needsOk = cat => !S.me.isAdmin && S.groceries.wishCategories.includes(cat);
+
+function hintHtml() {
+  const name = DRAFT.name.trim();
+  if (!name) return '';
+  const on = onListItem(gKey(name));
+  if (on) return `✓ Already ${on.status === 'checked' ? 'in the cart' : on.status === 'wish' ? 'asked for' : 'on the list'} (${esc(on.added_by)}, ${rel(on.added_at)})`;
+  const cat = draftCategory(name);
+  return (cat ? 'Goes to ' + esc(cat) : 'Goes to Not sorted') + (needsOk(cat) ? ' · 🙋 needs a parent\'s OK' : '');
+}
+function groceryHint() { const h = $('#g_hint'); if (h) h.innerHTML = hintHtml(); }
+
+/**
+ * Shopping-list changes show right away (mutate) and are sent in the background.
+ * The screen takes the server's answer only when no other change is still on its way.
+ */
+function gAct(mutate, fn, ...args) {
+  VER++; GPENDING++;
+  if (mutate) { mutate(); render(); }
+  return call(fn, ...args)
+    .then(s => { GPENDING--; if (!GPENDING) { if (EDITING) S = s; else update(s); } })
+    .catch(() => { GPENDING--; load(); });
+}
+
+function addItem(name, qty, category, urgent) {
+  const on = onListItem(gKey(name));
+  if (on) {
+    toast(`${name} is already ${on.status === 'checked' ? 'in the cart' : 'on the list'} (${on.added_by})`);
+    if (urgent && !on.urgent) gAct(() => { on.urgent = true; }, 'addGrocery', { name: name, urgent: true });
+    else render();
+    return;
+  }
+  const wish = needsOk(category);
+  gAct(() => S.groceries.items.push({ id: 'tmp' + Date.now(), name: name, qty: qty, category: category, urgent: urgent,
+                                      status: wish ? 'wish' : 'needed', added_by: S.me.name, added_at: Date.now() }),
+       'addGrocery', { name: name, qty: qty, category: category, urgent: urgent });
+  if (wish) toast('🙋 Added as a wish: a parent needs to OK it');
+}
+function addGrocery() {
+  const name = DRAFT.name.trim();
+  if (!name) { $('#g_name').focus(); return; }
+  const qty = DRAFT.qty.trim(), category = draftCategory(name), urgent = DRAFT.urgent;
+  Object.assign(DRAFT, { name: '', qty: '', cat: 'auto', urgent: false });
+  addItem(name, qty, category, urgent);
+}
+function quickAdd(ref) {
+  const c = catalogItem(GREFS[ref]);
+  if (c) addItem(c.name, '', autoCategory(c.name), false);
+}
+function snooze(ref) {
+  const c = catalogItem(GREFS[ref]);
+  if (c) gAct(() => { c.snoozed = Date.now() + 3 * 86400000; }, 'snoozeGrocery', c.key);
+}
+const findItem = id => S.groceries.items.find(i => i.id === id);
+function checkItem(id, checked) {
+  const i = findItem(id);
+  if (i) gAct(() => { i.status = checked ? 'checked' : 'needed'; i.checked_by = S.me.name; }, 'checkGrocery', id, checked);
+}
+function deleteItem(id) {
+  const i = findItem(id);
+  if (!i) return;
+  const copy = Object.assign({}, i);
+  gAct(() => { S.groceries.items = S.groceries.items.filter(x => x.id !== id); }, 'deleteGrocery', id);
+  toast(`Deleted ${i.name}`, () => gAct(() => { if (!onListItem(gKey(copy.name))) S.groceries.items.push(copy); }, 'restoreGrocery', id));
+}
+function answerWish(id, ok) {
+  const i = findItem(id);
+  if (i) gAct(() => { i.status = ok ? 'needed' : 'declined'; }, 'adminAnswerWish', id, ok);
+}
+function finishShopping(btn) {
+  const n = S.groceries.items.filter(i => i.status === 'checked').length;
+  const left = S.groceries.items.filter(i => i.status === 'needed').length;
+  if (confirm(`Mark ${n} item${n === 1 ? '' : 's'} as bought?` + (left ? ` ${left} stay on the list for next time.` : ''))) {
+    VER++;
+    act(btn, call('finishShopping'), 'Shopping done 🛒✓');
+  }
+}
+
+function groceryForm(id) {
+  const i = findItem(id);
+  if (!i) return;
+  const cats = S.groceries.categories;
+  form('Edit item', `
+    <label>What</label><input id="ge_name" dir="auto" value="${esc(i.name)}">
+    <label>How much (optional)</label><input id="ge_qty" dir="auto" value="${esc(i.qty)}" placeholder="2 kg · the big pack">
+    <label>Category</label><select id="ge_cat"><option value="">Not sorted</option>
+      ${cats.map(c => `<option ${c === i.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+    <label class="check"><input id="ge_urgent" type="checkbox" ${i.urgent ? 'checked' : ''}> ⚡ Urgent</label>
+    <div class="muted">Added by ${esc(i.added_by)} · ${rel(i.added_at)}${i.updated_by && i.updated_by !== i.added_by ? ' · last change by ' + esc(i.updated_by) : ''}</div>`,
+    () => { VER++; return call('editGrocery', id, { name: val('ge_name'), qty: val('ge_qty'), category: val('ge_cat'), urgent: chk('ge_urgent') }); });
+}
+
+function grocerySettingsForm() {
+  form('🛒 Shopping categories', `
+    <div class="muted">One per line, in the order you walk through the store. The shopping list is sorted this way.
+      Renaming a category moves its items to "Not sorted".</div>
+    <textarea id="gs_cats" rows="13" oninput="wishBoxes()">${esc(S.groceries.categories.join('\n'))}</textarea>
+    <label>🙋 Wishes: members' items in these categories wait for an admin's OK</label><div id="gs_wish"></div>`,
+    () => call('adminSaveGrocerySettings', {
+      categories: val('gs_cats').split('\n'),
+      wishCategories: [...document.querySelectorAll('.gs_w:checked')].map(x => x.value),
+    }));
+  wishBoxes();
+}
+function wishBoxes() {
+  const box = $('#gs_wish');
+  const checked = box.children.length ? [...document.querySelectorAll('.gs_w:checked')].map(x => x.value) : S.groceries.wishCategories;
+  box.innerHTML = val('gs_cats').split('\n').map(s => s.trim()).filter(Boolean)
+    .map(c => `<label class="check"><input type="checkbox" class="gs_w" value="${esc(c)}" ${checked.includes(c) ? 'checked' : ''}> ${esc(c)}</label>`).join('');
+}
+
 // ---------- boot ----------
 // The personal link is …/#u=<token>. Remember it so the home-screen icon keeps
 // working even if the phone drops the #fragment.
@@ -556,7 +854,8 @@ function showLinks() {
   if (!window.FAMILY_HUB_API) { $('#view').innerHTML = '<div class="card">The app is not configured yet (config.js).</div>'; return; }
   if (!TOKEN) { $('#view').innerHTML = '<div class="card">This page needs your personal link. Ask Mom or Dad for it.</div>'; return; }
   load();
-  setInterval(load, 60000);
+  // Every minute; every 20 s on the shopping list, so two people in the store see each other's ticks.
+  setInterval(() => { if (!document.hidden && (TAB === 'shop' || Date.now() - LAST_LOAD > 55000)) load(); }, 20000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
 })();
 </script>
