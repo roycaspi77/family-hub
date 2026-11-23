@@ -191,31 +191,14 @@ const openTasks = () => activeRotating().filter(a => a.current).map(a => a.curre
 
 // ---------- WhatsApp click-to-chat ----------
 /**
- * Opens WhatsApp on the phone with a chat to that member and the text already
- * written; the sender taps Send. Without a saved phone number WhatsApp asks
- * which contact to send it to.
+ * Opens WhatsApp with the text already written and no recipient: WhatsApp asks
+ * which chat, so it goes to the family group. (A link can't open a specific
+ * group, so this one tap to pick it is the minimum.) No direct-to-member buttons.
  */
-function waUrl(name, text) {
-  const u = S.users.find(x => x.name === name);
-  let digits = String((u && u.phone) || '').replace(/\D/g, '');
-  if (digits.charAt(0) === '0') digits = '972' + digits.slice(1);
-  return 'https://wa.me/' + digits + (text ? '?text=' + encodeURIComponent(text) : '');
-}
-const waBtn = (name, text, label) =>
-  `<a class="btn small wa" href="${esc(waUrl(name, text))}" target="_blank" rel="noopener">💬 ${esc(label)}</a>`;
-/**
- * Same text, no recipient: WhatsApp asks which chat, so it can go to the family group.
- * (A link can't open a specific group, so this one tap to pick it is the minimum.)
- */
-const waGroupBtn = text => waBtn('', text, 'Group');
-/** A predefined message: the direct button plus a Group button. */
-const waMsgBtn = (name, text, label) => waBtn(name, text, label) + waGroupBtn(text);
-/** One direct button per member of a slot ("Dad & Noa" gets two), plus one Group button. */
-const waBtns = (slot, textFor, label) => {
-  const names = String(slot).split('+').map(s => s.trim()).filter(Boolean);
-  return names.map(n => waBtn(n, textFor(n), names.length > 1 ? label + ' ' + n : label)).join('')
-    + waGroupBtn(textFor(who(slot)));
-};
+const waBtn = (text, label) =>
+  `<a class="btn small wa" href="${esc('https://wa.me/?text=' + encodeURIComponent(text))}" target="_blank" rel="noopener">💬 ${esc(label)}</a>`;
+/** A predefined message for a member or a slot ("Dad & Noa"), sent to the group. */
+const waBtns = (slot, textFor, label) => waBtn(textFor(who(slot)), label);
 
 const MSG = {
   rotating: (n, t) => `Hi ${n}, it's your turn for "${t.title}" 🧹 When you finish, press Done in Family Hub.`,
@@ -232,6 +215,8 @@ const MSG = {
     : `🟨 ${c.member}, you got a yellow card: ${c.explanation}. A second yellow card becomes a red card.`,
   goodWord: g => `🌟 ${g.member}, a good word for you: ${g.explanation}` +
     (g.prize ? `\n🎁 That's ${S.goodWords.perPrize} good words — your prize: ${g.prize}` : ''),
+  reward: r => `🏆 ${r.member} collected ${S.stars.perReward} ⭐ for doing tasks on their own — reward time! 🎁` +
+    (r.reward > 1 ? ` (reward #${r.reward})` : ''),
   nudge: t => `Hi ${t.offer_to}, I asked you in Family Hub to ${t.offer_kind === 'switch' ? 'switch turns with me for' : 'take'} "${t.title}". Can you accept it in the app? 🙏`,
   going: () => `🛒 I'm going to the supermarket soon. Need anything? Add it to the shopping list in Family Hub 👉 ${location.origin + location.pathname}`,
   list: groups => '🛒 Shopping list\n' + groups.map(([cat, items]) => `\n${cat || 'Not sorted'}\n` +
@@ -267,7 +252,7 @@ function taskCard(t) {
   if (t.offer_to) {
     state = `🔄 Waiting for ${esc(t.offer_to)} to ${t.offer_kind === 'switch' ? 'switch' : 'take it'}`;
     if (t.offer_by === S.me.name) {
-      buttons += `<button class="btn sec small" onclick="answerOffer('${t.id}', false, this)">Withdraw</button>` + waMsgBtn(t.offer_to, MSG.nudge(t), 'Nudge');
+      buttons += `<button class="btn sec small" onclick="answerOffer('${t.id}', false, this)">Withdraw</button>` + waBtn(MSG.nudge(t), 'Nudge');
     }
   } else if (t.replace_request === 'pending') {
     state = '🙋 Asked the admins for a replacement';
@@ -317,7 +302,7 @@ function cardItem(c) {
     <div class="row"><span class="title">${icon} ${esc(c.member)}</span><span class="muted">${day(c.created_at)}</span></div>
     <div>${esc(c.explanation)}</div>
     <div class="muted">${c.task ? 'About: ' + esc(c.task) + ' · ' : ''}${c.color === 'red' ? 'Extra turn in: <b>' + esc(c.red_task) + '</b> · ' : ''}${c.color === 'yellow' && c.used ? 'became part of a red card · ' : ''}by ${esc(c.by)}</div>
-    ${S.me.isAdmin ? `<div class="actions">${waMsgBtn(c.member, MSG.card(c), 'Send')}</div>` : ''}
+    ${S.me.isAdmin ? `<div class="actions">${waBtn(MSG.card(c), 'Send')}</div>` : ''}
   </div>`;
 }
 
@@ -327,7 +312,15 @@ function goodItem(g) {
     <div>${esc(g.explanation)}</div>
     ${g.prize ? `<div style="margin-top:4px">🎁 <b>Prize:</b> ${esc(g.prize)}</div>` : ''}
     <div class="muted">by ${esc(g.by)}</div>
-    ${S.me.isAdmin ? `<div class="actions">${waMsgBtn(g.member, MSG.goodWord(g), 'Send')}</div>` : ''}
+    ${S.me.isAdmin ? `<div class="actions">${waBtn(MSG.goodWord(g), 'Send')}</div>` : ''}
+  </div>`;
+}
+
+function rewardItem(r) {
+  return `<div class="card good">
+    <div class="row"><span class="title">🏆 ${esc(r.member)} · reward #${r.reward}</span><span class="muted">${day(r.created_at)}</span></div>
+    <div class="muted">${S.stars.perReward} ⭐ — the last one for “${esc(r.task)}”</div>
+    ${S.me.isAdmin ? `<div class="actions">${waBtn(MSG.reward(r), 'Announce the reward')}</div>` : ''}
   </div>`;
 }
 
@@ -349,7 +342,8 @@ const VIEWS = {
     const history = S.history.map(t => `<div class="card">
       <div class="row"><span class="title">${esc(t.title)}</span>
         <span class="${t.status === 'done' ? 'ok' : 'muted'}">${STATUS[t.status] || esc(t.status)}</span></div>
-      <div class="muted">${esc(who(t.assignee))} · ${t.completed_at ? when(t.completed_at) : ''}${t.completed_by && !t.members.includes(t.completed_by) ? ' · by ' + esc(t.completed_by) : ''}</div>
+      <div class="muted">${esc(who(t.assignee))} · ${t.completed_at ? when(t.completed_at) : ''}${t.completed_by && !t.members.includes(t.completed_by)
+        ? ' · by ' + esc(t.completed_by) : t.status === 'done' && t.completed_by ? ' · ⭐ ' + esc(t.completed_by) : ''}</div>
       ${t.note ? `<div class="muted">“${esc(t.note)}”</div>` : ''}</div>`).join('');
     return (offers ? '<h2>Requests for you</h2>' + offers : '') +
       '<h2>My tasks</h2>' + (mine.length ? mine.map(taskCard).join('') : '<div class="card muted">Nothing for you right now 🎉</div>') +
@@ -408,7 +402,7 @@ const VIEWS = {
 
     return addCard + wishCard +
       `<h2>Shopping list${count ? ' · ' + count : ''}</h2>
-      <div class="actions" style="margin:0 0 10px">${waBtn('', MSG.going(), "I'm going shopping")}${count ? waBtn('', MSG.list(groups), 'Send the list') : ''}</div>` +
+      <div class="actions" style="margin:0 0 10px">${waBtn(MSG.going(), "I'm going shopping")}${count ? waBtn(MSG.list(groups), 'Send the list') : ''}</div>` +
       list + cartCard +
       (declined.length ? `<div class="muted" style="margin-top:12px">Not this time: ${declined.map(i => `<bdi>${esc(i.name)}</bdi> (${esc(i.added_by)})`).join(', ')}</div>` : '');
   },
@@ -416,14 +410,21 @@ const VIEWS = {
     return '<h2>Cards</h2><div class="card"><table class="sum"><tr><td></td><td class="n muted">🟨 now</td><td class="n muted">🟥 total</td>' +
         (S.me.isAdmin ? '<td></td>' : '') + '</tr>' +
         S.cards.summary.map(c => `<tr><td>${esc(c.name)}</td><td class="n">${c.yellow ? '🟨' : '–'}</td><td class="n">${c.red}</td>` +
-          (S.me.isAdmin ? `<td style="text-align:right">${waMsgBtn(c.name, MSG.warning(c.name), 'Warn')}</td>` : '') + '</tr>').join('') +
+          (S.me.isAdmin ? `<td style="text-align:right">${waBtn(MSG.warning(c.name), 'Warn')}</td>` : '') + '</tr>').join('') +
         '</table><div class="muted" style="margin-top:8px">A second yellow card becomes a red card, which means an extra turn in a task.</div></div>' +
       '<h2>All cards</h2>' + (S.cards.list.map(cardItem).join('') || '<div class="card muted">No cards yet 👏</div>');
   },
   fun() {
     const per = S.goodWords.perPrize;
     const paydays = nextPaydays();
+    const st = S.stars;
+    const stars = !st ? '' : '<h2>Stars</h2><div class="card"><table class="sum"><tr><td></td><td class="muted">⭐ now</td><td class="n muted">🏆 rewards</td></tr>' +
+        st.summary.map(s => `<tr><td>${esc(s.name)}</td>
+          <td class="dots" title="${s.now} of ${st.perReward}">${'★'.repeat(s.now)}${'☆'.repeat(st.perReward - s.now)}</td><td class="n">${s.rewards}</td></tr>`).join('') +
+        `</table><div class="muted" style="margin-top:8px">Press Done on your own task to get a ⭐ (not when a parent marks it for you). Every ${st.perReward} ⭐ earn a reward 🏆</div></div>` +
+        st.rewards.map(rewardItem).join('');
     return '<h2>Coming dates</h2>' + (S.dates.upcoming.map(t => dateCard(t, false)).join('') || '<div class="card muted">Nothing planned yet.</div>') +
+      stars +
       '<h2>Good words</h2><div class="card"><table class="sum">' +
         S.goodWords.summary.map(g => { const p = g.count % per; return `<tr><td>${esc(g.name)}</td>
           <td class="n">🌟 ${g.count}</td><td class="dots">${'★'.repeat(p)}${'☆'.repeat(per - p)}</td></tr>`; }).join('') +
@@ -484,9 +485,8 @@ const VIEWS = {
       '<h2>Rotating tasks</h2>' + (rotating || '<div class="card muted">None yet.</div>') +
       '<h2>One-time tasks</h2>' + (oneTime || '<div class="card muted">None open.</div>') +
       '<h2>Family</h2>' + S.users.map((u, i) => `<div class="card row"><div><span class="title">${esc(u.name)}</span>
-          <span class="muted">${esc(u.role)} · ${shekel(u.allowance)}/month</span>
-          <div class="muted">${u.phone ? esc(u.phone) : 'no phone number'}</div></div>
-        <span class="actions" style="margin-top:0;flex-shrink:0">${u.phone ? waBtn(u.name, '', 'Chat') : ''}
+          <span class="muted">${esc(u.role)} · ${shekel(u.allowance)}/month</span></div>
+        <span class="actions" style="margin-top:0;flex-shrink:0">
         <button class="btn sec small" onclick="editUser(S.users[${i}].name)">Edit</button></span></div>`).join('');
   },
 };
@@ -494,7 +494,16 @@ const VIEWS = {
 // ---------- actions ----------
 function busy(btn) { if (btn) btn.disabled = true; }
 function act(btn, promise, msg) { busy(btn); promise.then(s => { if (msg) toast(msg); update(s); }).catch(() => { if (btn) btn.disabled = false; }); }
-function complete(id, btn) { act(btn, call('completeTurn', id, $('#note-' + id).value), 'Nice! ✓'); }
+function complete(id, btn) {
+  busy(btn);
+  call('completeTurn', id, $('#note-' + id).value).then(s => {
+    const st = s.star;
+    toast(!st ? 'Done ✓'
+      : st.reward ? `🏆 ${st.per} stars — you earned a reward! The count starts again.`
+      : `Nice! ⭐ ${st.count} of ${st.per}`);
+    update(s);
+  }).catch(() => { if (btn) btn.disabled = false; });
+}
 function answerOffer(id, accept, btn) { act(btn, call('answerOffer', id, accept), accept ? 'It\'s yours now' : 'Done'); }
 function withdrawReplace(id, btn) { act(btn, call('requestReplace', id, '', true)); }
 function answerReplace(id, member, btn) { act(btn, call('adminAnswerReplace', id, member), member ? 'Replaced' : 'Declined'); }
@@ -621,16 +630,15 @@ function goodPrizeNotice() {
 }
 
 function editUser(name) {
-  const u = S.users.find(x => x.name === name) || { name:'', email:'', phone:'', role:'member', allowance:0 };
+  const u = S.users.find(x => x.name === name) || { name:'', email:'', role:'member', allowance:0 };
   form(name ? 'Edit ' + esc(name) : 'Add member', `
     ${name ? '' : '<label>Name (used in rotations, cannot be changed later)</label><input id="u_name">'}
     <label>Role</label><select id="u_role"><option value="member">Member</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option></select>
-    <label>Phone (for the 💬 WhatsApp buttons)</label><input id="u_phone" type="tel" placeholder="054-1234567" value="${esc(u.phone || '')}">
     <label>Monthly allowance (₪, paid on the 1st)</label><input id="u_allow" type="number" min="0" step="1" value="${u.allowance}">
     <label>Email (optional)</label><input id="u_email" type="email" value="${esc(u.email)}">`,
     () => call('adminSaveUser', {
       existing: name || '', name: name ? name : val('u_name'), role: val('u_role'), email: val('u_email'),
-      phone: val('u_phone'), allowance: val('u_allow'),
+      allowance: val('u_allow'),
     }));
 }
 
@@ -652,8 +660,7 @@ function showLinks() {
     LINKS = links;
     $('#view').innerHTML = `<h2>Personal links</h2><div class="card muted">Each link logs that person in — share it only with them. On the phone: open it, then “Add to Home Screen”.</div>` +
       links.map((l, i) => `<div class="card"><b>${esc(l.name)}</b><input id="link-${i}" readonly value="${esc(l.url)}" onclick="this.select()" style="margin-top:6px">
-        <div class="actions">${waBtn(l.name, `${l.name}, your Family Hub link: ${l.url}`, 'Send on WhatsApp')}
-          <button class="btn sec small" onclick="shareLink(${i})">Share…</button></div></div>`).join('') +
+        <div class="actions"><button class="btn sec small" onclick="shareLink(${i})">Share…</button></div></div>`).join('') +
       `<button class="btn sec" onclick="go('admin')">Back</button>`;
   });
 }

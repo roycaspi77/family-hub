@@ -2,7 +2,7 @@
 
 This is the family's app for **tasks**, the **shopping list**, **cards**, **dates**, **good words** and **allowance**. It runs on a Google Sheet with Apps Script plus GitHub Pages, costs nothing, and needs no app-store install.
 
-**Nothing is sent automatically.** Everything is shown in the app (badges show what's waiting), and messages go through **💬 WhatsApp buttons**. A button opens WhatsApp with the chat and the message ready, and you tap **Send**.
+**Nothing is sent automatically.** Everything is shown in the app (badges show what's waiting), and messages go through **💬 WhatsApp buttons**. A button opens WhatsApp with the message ready; you pick the chat (the family group) and tap **Send**. There are no direct-to-member buttons.
 
 ## Screens
 | Tab | What's there |
@@ -10,7 +10,7 @@ This is the family's app for **tasks**, the **shopping list**, **cards**, **date
 | 🧹 **Tasks** | Requests for you (Accept / Decline), my tasks, the rotations, other one-time tasks, history |
 | 🛒 **Shopping** | The family's shopping list: add, edit, delete, tick off in the store, wishes, usuals and "running low?" |
 | 🟨 **Cards** | Each member's current yellow and total reds, every card with its explanation. Admins also get ⚠️ Warn and 💬 Send. |
-| 🎉 **Fun Stuff** | Coming dates, good words with prizes, allowance, past dates |
+| 🎉 **Fun Stuff** | Coming dates, ⭐ stars and rewards, good words with prizes, allowance, past dates |
 | ⚙️ **Admin** | Admins only: replacement requests, tasks, the rotation line editor, dates, cards, good words, family, links |
 
 ## Tasks
@@ -36,7 +36,7 @@ This is the family's app for **tasks**, the **shopping list**, **cards**, **date
 - **Admins** can edit it, reassign it, or cancel it.
 
 ### 💬 Reminders
-An admin taps **💬 Remind** on a task, and WhatsApp opens with a ready message to that member:
+An admin taps **💬 Remind** on a task, and WhatsApp opens with a ready message for the group:
 - Rotating: *"Hi Noa, it's your turn for "Dishes" 🧹 …"*
 - One-time: *"… is due Sun 21:00 …"*
 
@@ -69,13 +69,16 @@ One shared list. **Everyone** can add, edit and delete items. Took the last appl
   - Given by an admin, with an explanation everyone can see.
   - Every **3rd** one comes with a **prize** the admin chooses.
   - Admins can **💬 Send** each one.
+- **⭐ Stars:**
+  - A member who presses **Done** on their own task gets a ⭐. When an admin presses Done for them, there's no star (History shows "⭐ Noa" vs "by Dad").
+  - Every **10** stars earn a **🏆 reward** and the count starts again. The Stars table shows each member's stars now and how many rewards they got.
+  - Each reward has a **💬 Announce the reward** button for the family group.
 - **💰 Allowance:** a monthly amount per member, set in Admin → Edit member. Each member sees their next two paydays (the 1st of each month), and admins see everyone's.
 
 ## How it's built
 - **`docs/`:** the screens, a static web app on **GitHub Pages** (`https://roycaspi77.github.io/family-hub/`).
 - **`apps-script/`:** the backend, a Google Apps Script bound to the Google Sheet (JSON API). `docs/config.js` holds its `/exec` URL.
 - **Personal links:** they look like `https://roycaspi77.github.io/family-hub/#u=<token>`. The token goes after `#`, so it is never sent to GitHub, and the phone remembers it.
-- **Phone numbers:** set in Admin → Edit member (`054-1234567`, stored as `+97254…`). They power the WhatsApp buttons. Without one, WhatsApp asks which contact to send to.
 
 ## Upgrading from the previous version
 1. Open the Google Sheet → **Extensions → Apps Script**. Replace all of `Code.gs` with [`apps-script/Code.gs`](apps-script/Code.gs) and save.
@@ -97,7 +100,7 @@ One shared list. **Everyone** can add, edit and delete items. Took the last appl
 1. Create a Google Sheet → **Extensions → Apps Script**. Paste `apps-script/Code.gs` into `Code.gs` (check that `APP_URL` is your GitHub Pages address). In **Project Settings → Show "appsscript.json"**, paste in `apps-script/appsscript.json`.
 2. Run **`setup`** and approve the permissions. In the **Users** sheet, rename `Admin` to your name.
 3. **Deploy → New deployment → Web app**, with *Execute as: Me* and *Who has access: Anyone*. Put the `/exec` URL in `docs/config.js`.
-4. Run **`printLinks`** and open your link. In **Admin**, add the family (with phone numbers), then send each person their link (**Personal links → 💬 Send on WhatsApp**).
+4. Run **`printLinks`** and open your link. In **Admin**, add the family, then send each person their link (**Personal links → Share…**).
 5. On each phone: open the link → **Add to Home Screen**.
 
 If parental controls block it, approve `roycaspi77.github.io` and `script.google.com` (Family Link: Controls → Content restrictions → Google Chrome → Manage sites → Approved).

@@ -14,6 +14,9 @@
  *   extra turn for the member at the front of a task the admin picks.
  * Fun: one-off dates (name, members, time, place), good words (every 3rd
  *   comes with a prize) and a monthly allowance paid on the 1st.
+ * Stars: a member who presses Done on their own task gets a star (an admin
+ *   pressing Done for them gives none). Every 10th star is a reward and the
+ *   count starts again; rewards are counted per member.
  * Supermarket: one shared shopping list everyone can add to, edit and delete
  *   from. In the store, items are crossed out and "Finish shopping" marks them
  *   bought. The buying history (GroceryCatalog) powers autocomplete, auto-sorting
@@ -30,7 +33,7 @@
  *
  * Sheets (created / upgraded by setup()):
  *   Users, Activities (rotating tasks), Turns (task turns, one-time tasks and
- *   dates), Cards, GoodWords, Groceries, GroceryCatalog, Settings. Columns from
+ *   dates), Cards, GoodWords, Stars, Groceries, GroceryCatalog, Settings. Columns from
  *   older versions are left in place.
  *
  * Access: this script is only the backend (a JSON API). The screens are a
@@ -44,6 +47,7 @@ const APP_URL = 'https://roycaspi77.github.io/family-hub/';
 const TZ = Session.getScriptTimeZone();
 
 const GOOD_WORDS_PER_PRIZE = 3;
+const STARS_PER_REWARD = 10;
 const OPEN_STATUSES = ['assigned', 'in_progress', 'upcoming'];
 const EXTRA = '*';   // prefix of an extra turn in Activities.planned
 
@@ -56,6 +60,9 @@ const HEADERS = {
   Cards: ['id', 'member', 'color', 'explanation', 'task_id', 'red_task_id',
           'used', 'created_at', 'by'],
   GoodWords: ['id', 'member', 'explanation', 'prize', 'created_at', 'by'],
+  // One row per Done a member pressed on their own task. Every STARS_PER_REWARD-th
+  // star of a member is a reward (reward = which reward it is: 1, 2, …).
+  Stars: ['id', 'member', 'turn_id', 'task', 'created_at', 'reward'],
   Groceries: ['id', 'name', 'qty', 'category', 'urgent', 'status', 'added_by', 'added_at',
               'updated_by', 'updated_at', 'checked_by', 'bought_at'],
   GroceryCatalog: ['key', 'name', 'category', 'times_bought', 'first_bought', 'last_bought', 'snoozed_until'],
@@ -192,14 +199,15 @@ function getState(token) {
   const activityName = id => { const a = activities.find(x => x.id === id); return a ? a.name : ''; };
   const cards = readAll_('Cards');
   const goodWords = readAll_('GoodWords');
+  const stars = readAll_('Stars');
   const now = Date.now();
   const dates = turns.filter(t => t.type === 'fun' && t.status !== 'cancelled');
 
   return {
     me: { name: me.name, role: me.role, isAdmin: admin },
     users: users_().map(u => admin
-      ? { name: u.name, role: u.role, email: u.email, phone: String(u.phone || ''), allowance: Number(u.allowance) || 0 }
-      : { name: u.name, role: u.role, phone: String(u.phone || '') }),   // phones power the WhatsApp buttons
+      ? { name: u.name, role: u.role, email: u.email, allowance: Number(u.allowance) || 0 }
+      : { name: u.name, role: u.role }),
     rotating: activities.filter(a => admin || bool_(a.active)).map(a => {
       const current = open.find(t => t.activity_id === a.id);
       return {
@@ -240,6 +248,16 @@ function getState(token) {
       summary: users_().map(u => ({ name: u.name, count: goodWords.filter(g => g.member === u.name).length })),
       perPrize: GOOD_WORDS_PER_PRIZE,
     },
+    stars: {
+      summary: users_().map(u => {
+        const n = stars.filter(s => s.member === u.name).length;
+        return { name: u.name, total: n, now: n % STARS_PER_REWARD, rewards: Math.floor(n / STARS_PER_REWARD) };
+      }),
+      rewards: stars.filter(s => Number(s.reward) > 0).reverse().slice(0, 30).map(s => ({
+        id: s.id, member: s.member, reward: Number(s.reward), task: String(s.task || ''), created_at: ms_(s.created_at),
+      })),
+      perReward: STARS_PER_REWARD,
+    },
     allowance: users_().filter(u => admin || u.name === me.name)
       .map(u => ({ name: u.name, amount: Number(u.allowance) || 0 })),
     groceries: groceryState_(now),
@@ -248,15 +266,32 @@ function getState(token) {
 
 // ---------- Member actions ----------
 
-/** Rotating: the turn goes to the next in line. One-time: the task is over. */
+/**
+ * Rotating: the turn goes to the next in line. One-time: the task is over.
+ * Done on your own task earns a star; an admin's Done for someone else doesn't.
+ * The reply carries `star` ({count, reward}) so the page can celebrate it.
+ */
 function completeTurn(token, turnId, note) {
   return withLock_(() => {
     const me = auth_(token);
     const turn = openTask_(turnId);
     requireParticipant_(me, turn);
+    const own = members_(turn.assignee).indexOf(me.name) >= 0;
     closeTurn_(turn, 'done', me.name, clean_(note, 300));
-    return getState(token);
+    const star = own ? addStar_(me.name, turn) : null;
+    const state = getState(token);
+    if (star) state.star = star;
+    return state;
   });
+}
+
+/** Records a star; every STARS_PER_REWARD-th one is a reward. Returns where the count stands. */
+function addStar_(name, turn) {
+  if (!sheet_('Stars')) return null;   // setup() not run yet for this version
+  const total = readAll_('Stars').filter(s => s.member === name).length + 1;
+  const reward = total % STARS_PER_REWARD === 0 ? total / STARS_PER_REWARD : '';
+  writeRow_('Stars', { id: uid_(), member: name, turn_id: turn.id, task: turn.title, created_at: new Date(), reward: reward });
+  return { count: total % STARS_PER_REWARD || STARS_PER_REWARD, per: STARS_PER_REWARD, reward: reward || 0 };
 }
 
 /**
@@ -608,7 +643,7 @@ function adminSaveUser(token, input) {
       user = { token: newToken_(), name: name };
     }
     user.email = clean_(input.email, 100);
-    user.phone = intlPhone_(input.phone);
+    if (input.phone !== undefined) user.phone = intlPhone_(input.phone);   // the page no longer edits phones
     user.role = input.role === 'admin' ? 'admin' : 'member';
     user.allowance = Math.max(0, Math.min(100000, Number(input.allowance) || 0));
     writeRow_('Users', user);
