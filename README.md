@@ -71,6 +71,7 @@ One shared list. **Everyone** can add, edit and delete items. Took the last appl
   - Admins can **💬 Send** each one.
 - **⭐ Stars:**
   - A member who presses **Done** on their own task gets a ⭐. When an admin presses Done for them, there's no star (History shows "⭐ Noa" vs "by Dad").
+  - An admin can also **give a star** by hand, with an optional reason: **+⭐** next to the member in the Stars table, or Admin → **⭐ Star**.
   - Every **10** stars earn a **🏆 reward** and the count starts again. The Stars table shows each member's stars now and how many rewards they got.
   - Each reward has a **💬 Announce the reward** button for the family group.
 - **💰 Allowance:** a monthly amount per member, set in Admin → Edit member. Each member sees their next two paydays (the 1st of each month), and admins see everyone's.

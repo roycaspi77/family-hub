@@ -15,7 +15,8 @@
  * Fun: one-off dates (name, members, time, place), good words (every 3rd
  *   comes with a prize) and a monthly allowance paid on the 1st.
  * Stars: a member who presses Done on their own task gets a star (an admin
- *   pressing Done for them gives none). Every 10th star is a reward and the
+ *   pressing Done for them gives none); an admin can also give a star by
+ *   hand, with a reason. Every 10th star is a reward and the
  *   count starts again; rewards are counted per member.
  * Supermarket: one shared shopping list everyone can add to, edit and delete
  *   from. In the store, items are crossed out and "Finish shopping" marks them
@@ -62,7 +63,8 @@ const HEADERS = {
   GoodWords: ['id', 'member', 'explanation', 'prize', 'created_at', 'by'],
   // One row per Done a member pressed on their own task. Every STARS_PER_REWARD-th
   // star of a member is a reward (reward = which reward it is: 1, 2, …).
-  Stars: ['id', 'member', 'turn_id', 'task', 'created_at', 'reward'],
+  // An admin can also give a star by hand: no turn_id, task = the reason, by = the admin.
+  Stars: ['id', 'member', 'turn_id', 'task', 'created_at', 'reward', 'by'],
   Groceries: ['id', 'name', 'qty', 'category', 'urgent', 'status', 'added_by', 'added_at',
               'updated_by', 'updated_at', 'checked_by', 'bought_at'],
   GroceryCatalog: ['key', 'name', 'category', 'times_bought', 'first_bought', 'last_bought', 'snoozed_until'],
@@ -164,7 +166,7 @@ const API = {
   getState, completeTurn, offerTurn, answerOffer, requestReplace,
   adminSaveActivity, adminInsertTurn, adminMoveTurn, adminRemoveTurn, adminResetOrder,
   adminCreateOneTimeTask, adminEditTurn, adminSkipTurn, adminAnswerReplace,
-  adminSaveDate, adminDeleteDate, adminGiveCard, adminGiveGoodWord,
+  adminSaveDate, adminDeleteDate, adminGiveCard, adminGiveGoodWord, adminGiveStar,
   adminSaveUser, adminGetLinks,
   addGrocery, editGrocery, deleteGrocery, restoreGrocery, checkGrocery, finishShopping,
   snoozeGrocery, adminAnswerWish, adminSaveGrocerySettings,
@@ -255,6 +257,7 @@ function getState(token) {
       }),
       rewards: stars.filter(s => Number(s.reward) > 0).reverse().slice(0, 30).map(s => ({
         id: s.id, member: s.member, reward: Number(s.reward), task: String(s.task || ''), created_at: ms_(s.created_at),
+        manual: !s.turn_id, by: s.by || s.member,
       })),
       perReward: STARS_PER_REWARD,
     },
@@ -286,12 +289,28 @@ function completeTurn(token, turnId, note) {
 }
 
 /** Records a star; every STARS_PER_REWARD-th one is a reward. Returns where the count stands. */
-function addStar_(name, turn) {
+function addStar_(name, turn, byName) {
   if (!sheet_('Stars')) return null;   // setup() not run yet for this version
   const total = readAll_('Stars').filter(s => s.member === name).length + 1;
   const reward = total % STARS_PER_REWARD === 0 ? total / STARS_PER_REWARD : '';
-  writeRow_('Stars', { id: uid_(), member: name, turn_id: turn.id, task: turn.title, created_at: new Date(), reward: reward });
-  return { count: total % STARS_PER_REWARD || STARS_PER_REWARD, per: STARS_PER_REWARD, reward: reward || 0 };
+  writeRow_('Stars', { id: uid_(), member: name, turn_id: turn.id || '', task: turn.title, created_at: new Date(),
+    reward: reward, by: byName || name });
+  return { member: name, count: total % STARS_PER_REWARD || STARS_PER_REWARD, per: STARS_PER_REWARD, reward: reward || 0 };
+}
+
+/** An admin gives a member a star by hand (counts toward the reward like any other star). */
+function adminGiveStar(token, input) {
+  return withLock_(() => {
+    const me = auth_(token);
+    requireAdmin_(me);
+    const member = userByName_(input.member);
+    if (!member) throw new Error('Pick a family member.');
+    if (!sheet_('Stars')) throw new Error('Run setup in Apps Script first (it adds the Stars sheet).');
+    const star = addStar_(member.name, { title: clean_(input.reason, 100) }, me.name);
+    const state = getState(token);
+    state.star = star;
+    return state;
+  });
 }
 
 /**

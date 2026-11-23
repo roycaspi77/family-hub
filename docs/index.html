@@ -215,7 +215,7 @@ const MSG = {
     : `🟨 ${c.member}, you got a yellow card: ${c.explanation}. A second yellow card becomes a red card.`,
   goodWord: g => `🌟 ${g.member}, a good word for you: ${g.explanation}` +
     (g.prize ? `\n🎁 That's ${S.goodWords.perPrize} good words — your prize: ${g.prize}` : ''),
-  reward: r => `🏆 ${r.member} collected ${S.stars.perReward} ⭐ for doing tasks on their own — reward time! 🎁` +
+  reward: r => `🏆 ${r.member} collected ${S.stars.perReward} ⭐ — reward time! 🎁` +
     (r.reward > 1 ? ` (reward #${r.reward})` : ''),
   nudge: t => `Hi ${t.offer_to}, I asked you in Family Hub to ${t.offer_kind === 'switch' ? 'switch turns with me for' : 'take'} "${t.title}". Can you accept it in the app? 🙏`,
   going: () => `🛒 I'm going to the supermarket soon. Need anything? Add it to the shopping list in Family Hub 👉 ${location.origin + location.pathname}`,
@@ -319,7 +319,7 @@ function goodItem(g) {
 function rewardItem(r) {
   return `<div class="card good">
     <div class="row"><span class="title">🏆 ${esc(r.member)} · reward #${r.reward}</span><span class="muted">${day(r.created_at)}</span></div>
-    <div class="muted">${S.stars.perReward} ⭐ — the last one for “${esc(r.task)}”</div>
+    <div class="muted">${S.stars.perReward} ⭐ — the last one ${r.manual ? `from ${esc(r.by)}${r.task ? ': “' + esc(r.task) + '”' : ''}` : `for “${esc(r.task)}”`}</div>
     ${S.me.isAdmin ? `<div class="actions">${waBtn(MSG.reward(r), 'Announce the reward')}</div>` : ''}
   </div>`;
 }
@@ -418,10 +418,13 @@ const VIEWS = {
     const per = S.goodWords.perPrize;
     const paydays = nextPaydays();
     const st = S.stars;
-    const stars = !st ? '' : '<h2>Stars</h2><div class="card"><table class="sum"><tr><td></td><td class="muted">⭐ now</td><td class="n muted">🏆 rewards</td></tr>' +
+    const stars = !st ? '' : '<h2>Stars</h2><div class="card"><table class="sum"><tr><td></td><td class="muted">⭐ now</td><td class="n muted">🏆 rewards</td>' +
+        (S.me.isAdmin ? '<td></td>' : '') + '</tr>' +
         st.summary.map(s => `<tr><td>${esc(s.name)}</td>
-          <td class="dots" title="${s.now} of ${st.perReward}">${'★'.repeat(s.now)}${'☆'.repeat(st.perReward - s.now)}</td><td class="n">${s.rewards}</td></tr>`).join('') +
-        `</table><div class="muted" style="margin-top:8px">Press Done on your own task to get a ⭐ (not when a parent marks it for you). Every ${st.perReward} ⭐ earn a reward 🏆</div></div>` +
+          <td class="dots" title="${s.now} of ${st.perReward}">${'★'.repeat(s.now)}${'☆'.repeat(st.perReward - s.now)}</td><td class="n">${s.rewards}</td>` +
+          (S.me.isAdmin ? `<td style="text-align:right"><button class="btn sec small" title="Give ${esc(s.name)} a star" onclick="giveStar(S.stars.summary[${st.summary.indexOf(s)}].name)">+⭐</button></td>` : '') +
+          '</tr>').join('') +
+        `</table><div class="muted" style="margin-top:8px">Press Done on your own task to get a ⭐ (not when a parent marks it for you). Parents can also give a ⭐. Every ${st.perReward} ⭐ earn a reward 🏆</div></div>` +
         st.rewards.map(rewardItem).join('');
     return '<h2>Coming dates</h2>' + (S.dates.upcoming.map(t => dateCard(t, false)).join('') || '<div class="card muted">Nothing planned yet.</div>') +
       stars +
@@ -479,6 +482,7 @@ const VIEWS = {
       <div class="actions">
         <button class="btn sec" onclick="giveCard()">🟨 Yellow card</button>
         <button class="btn sec" onclick="giveGoodWord()">🌟 Good word</button>
+        ${S.stars ? '<button class="btn sec" onclick="giveStar()">⭐ Star</button>' : ''}
         <button class="btn sec" onclick="editUser()">+ Add member</button>
         <button class="btn sec" onclick="showLinks()">Personal links</button>
         ${S.groceries ? '<button class="btn sec" onclick="grocerySettingsForm()">🛒 Shopping categories</button>' : ''}</div>` +
@@ -496,13 +500,9 @@ function busy(btn) { if (btn) btn.disabled = true; }
 function act(btn, promise, msg) { busy(btn); promise.then(s => { if (msg) toast(msg); update(s); }).catch(() => { if (btn) btn.disabled = false; }); }
 function complete(id, btn) {
   busy(btn);
-  call('completeTurn', id, $('#note-' + id).value).then(s => {
-    const st = s.star;
-    toast(!st ? 'Done ✓'
-      : st.reward ? `🏆 ${st.per} stars — you earned a reward! The count starts again.`
-      : `Nice! ⭐ ${st.count} of ${st.per}`);
-    update(s);
-  }).catch(() => { if (btn) btn.disabled = false; });
+  call('completeTurn', id, $('#note-' + id).value)
+    .then(s => { starToast(s.star); update(s); })
+    .catch(() => { if (btn) btn.disabled = false; });
 }
 function answerOffer(id, accept, btn) { act(btn, call('answerOffer', id, accept), accept ? 'It\'s yours now' : 'Done'); }
 function withdrawReplace(id, btn) { act(btn, call('requestReplace', id, '', true)); }
@@ -621,6 +621,27 @@ function giveGoodWord() {
     <div id="g_prize"></div>`,
     () => call('adminGiveGoodWord', { member: val('g_who'), explanation: val('g_why'), prize: $('#g_prizeval') ? val('g_prizeval') : '' }));
   goodPrizeNotice();
+}
+function giveStar(name) {
+  form('⭐ Give a star', `
+    <label>For</label><select id="s_who" onchange="starNotice()">${memberOptions('', name)}</select>
+    <label>What for (optional, everyone will see this)</label><input id="s_why" maxlength="100" placeholder="Helped with the groceries">
+    <div id="s_note"></div>`,
+    () => call('adminGiveStar', { member: val('s_who'), reason: val('s_why') }).then(s => { starToast(s.star); return s; }));
+  starNotice();
+}
+function starNotice() {
+  const s = S.stars.summary.find(x => x.name === val('s_who'));
+  const next = (s ? s.now : 0) + 1;
+  $('#s_note').innerHTML = `<div class="muted" style="margin-top:8px">This will be ⭐ ${next} of ${S.stars.perReward}` +
+    (next === S.stars.perReward ? ' — it completes a 🏆 reward!' : '') + '</div>';
+}
+/** Mine: "Nice! ⭐ 3 of 10"; given by an admin: "⭐ Noa: 3 of 10". */
+function starToast(st) {
+  if (!st) return toast('Done ✓');
+  const mine = st.member === S.me.name;
+  toast(st.reward ? `🏆 ${mine ? 'You' : st.member} earned a reward (${st.per} stars)! The count starts again.`
+    : mine ? `Nice! ⭐ ${st.count} of ${st.per}` : `⭐ ${st.member}: ${st.count} of ${st.per}`);
 }
 function goodPrizeNotice() {
   const g = S.goodWords.summary.find(x => x.name === val('g_who'));
