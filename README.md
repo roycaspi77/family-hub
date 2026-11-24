@@ -10,7 +10,7 @@ This is the family's app for **tasks**, the **shopping list**, **cards**, **date
 | 🧹 **Tasks** | Requests for you (Accept / Decline), my tasks, the rotations, other one-time tasks, history |
 | 🛒 **Shopping** | The family's shopping list: add, edit, delete, tick off in the store, wishes, usuals and "running low?" |
 | 🟨 **Cards** | Each member's current yellow and total reds, every card with its explanation. Admins also get ⚠️ Warn and 💬 Send. |
-| 🎉 **Fun Stuff** | Coming dates, ⭐ stars and rewards, good words with prizes, allowance, past dates |
+| 🎉 **Fun Stuff** | Coming dates, 🏅 achievements and 🏆 rewards, 🌟 good words, allowance, past dates |
 | ⚙️ **Admin** | Admins only: replacement requests, tasks, the rotation line editor, dates, cards, good words, family, links |
 
 ## Tasks
@@ -65,15 +65,14 @@ One shared list. **Everyone** can add, edit and delete items. Took the last appl
   - **Fields:** a name, one or more members (e.g. Dad and Noa), a time and a place. Dates don't repeat.
   - **Admins** can add, edit and delete dates, and tap **💬 Remind** to message each member.
   - A date moves to *Past dates* 3 hours after it starts.
-- **🌟 Good words:**
-  - Given by an admin, with an explanation everyone can see.
-  - Every **3rd** one comes with a **prize** the admin chooses.
-  - Admins can **💬 Send** each one.
-- **⭐ Stars:**
-  - A member who presses **Done** on their own task gets a ⭐. When an admin presses Done for them, there's no star (History shows "⭐ Noa" vs "by Dad").
-  - An admin can also **give a star** by hand, with an optional reason: **+⭐** next to the member in the Stars table, or Admin → **⭐ Star**.
-  - Every **10** stars earn a **🏆 reward** and the count starts again. The Stars table shows each member's stars now and how many rewards they got.
-  - Each reward has a **💬 Announce the reward** button for the family group.
+- **🌟 Good words** (one list of both kinds):
+  - **Done on your own task:** pressing **Done** on your own task earns one ("✅ Noa did "Dishes""). When an admin presses Done for you, it doesn't (History shows "🌟 Noa" vs "by Dad").
+  - **From an admin:** with an explanation everyone can see (**+🌟** next to the member, or Admin → **🌟 Good word**). Admins can **💬 Send** each one to the group.
+- **🏅 Achievements** (like the badges in word-games):
+  - Each member has a badge per rotating task, one for one-time tasks, and one for good words from an admin. Locked badges are grey, and each shows a progress bar to its next level.
+  - Levels: 🥉 Bronze, 🥈 Silver, 🥇 Gold, 🏅 Champion, 💎 Diamond, 👑 Royal, 🚀 Legend. A task's levels come at 3 / 10 / 20 / 35 / 50 / 75 / 100 Dones, then every 25. Good words come at 1 / 3 / 6 / 10 / 15 / 20 / 30 / 40 / 50, then every 10. Each level reached is one achievement.
+  - Every **5** achievements of any kind earn a **🏆 reward**. Each reward has a **💬 Announce the reward** button for the family group.
+  - To change the levels, edit `TASK_LEVELS`, `WORD_LEVELS` and `ACHIEVEMENTS_PER_REWARD` at the top of `Code.gs`.
 - **💰 Allowance:** a monthly amount per member, set in Admin → Edit member. Each member sees their next two paydays (the 1st of each month), and admins see everyone's.
 
 ## How it's built

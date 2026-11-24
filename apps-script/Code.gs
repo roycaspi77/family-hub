@@ -12,12 +12,15 @@
  *   to replace them.
  * Cards: yellow cards; a 2nd unused yellow becomes a red card, which adds an
  *   extra turn for the member at the front of a task the admin picks.
- * Fun: one-off dates (name, members, time, place), good words (every 3rd
- *   comes with a prize) and a monthly allowance paid on the 1st.
- * Stars: a member who presses Done on their own task gets a star (an admin
- *   pressing Done for them gives none); an admin can also give a star by
- *   hand, with a reason. Every 10th star is a reward and the
- *   count starts again; rewards are counted per member.
+ * Fun: one-off dates (name, members, time, place), good words and a monthly
+ *   allowance paid on the 1st.
+ * Good words: given by an admin, or earned by pressing Done on your own task
+ *   (an admin pressing Done for you earns none). Both kinds are one list.
+ * Achievements (like the word-games badges): each member has a track per
+ *   rotating task, one for one-time tasks and one for good words given by an
+ *   admin. A track has levels (TASK_LEVELS / WORD_LEVELS, then every *_STEP);
+ *   each level reached is one achievement. Every ACHIEVEMENTS_PER_REWARD
+ *   achievements of any kind earn a reward. All of it is counted from GoodWords.
  * Supermarket: one shared shopping list everyone can add to, edit and delete
  *   from. In the store, items are crossed out and "Finish shopping" marks them
  *   bought. The buying history (GroceryCatalog) powers autocomplete, auto-sorting
@@ -34,8 +37,9 @@
  *
  * Sheets (created / upgraded by setup()):
  *   Users, Activities (rotating tasks), Turns (task turns, one-time tasks and
- *   dates), Cards, GoodWords, Stars, Groceries, GroceryCatalog, Settings. Columns from
- *   older versions are left in place.
+ *   dates), Cards, GoodWords, Groceries, GroceryCatalog, Settings. Columns and
+ *   sheets from older versions are left in place (setup moves the old Stars
+ *   sheet's rows into GoodWords once).
  *
  * Access: this script is only the backend (a JSON API). The screens are a
  * static page on GitHub Pages (APP_URL) that POSTs here. Each member opens a
@@ -47,8 +51,13 @@ const APP_NAME = 'Family Hub';
 const APP_URL = 'https://roycaspi77.github.io/family-hub/';
 const TZ = Session.getScriptTimeZone();
 
-const GOOD_WORDS_PER_PRIZE = 3;
-const STARS_PER_REWARD = 10;
+// Achievement levels: how many Dones on your own (per task) / good words from an
+// admin reach each level; after the list, one more level every *_STEP.
+const TASK_LEVELS = [3, 10, 20, 35, 50, 75, 100];
+const TASK_STEP = 25;
+const WORD_LEVELS = [1, 3, 6, 10, 15, 20, 30, 40, 50];
+const WORD_STEP = 10;
+const ACHIEVEMENTS_PER_REWARD = 5;
 const OPEN_STATUSES = ['assigned', 'in_progress', 'upcoming'];
 const EXTRA = '*';   // prefix of an extra turn in Activities.planned
 
@@ -60,11 +69,10 @@ const HEADERS = {
           'offer_to', 'offer_kind', 'offer_by', 'replace_request', 'replace_reason'],
   Cards: ['id', 'member', 'color', 'explanation', 'task_id', 'red_task_id',
           'used', 'created_at', 'by'],
-  GoodWords: ['id', 'member', 'explanation', 'prize', 'created_at', 'by'],
-  // One row per Done a member pressed on their own task. Every STARS_PER_REWARD-th
-  // star of a member is a reward (reward = which reward it is: 1, 2, …).
-  // An admin can also give a star by hand: no turn_id, task = the reason, by = the admin.
-  Stars: ['id', 'member', 'turn_id', 'task', 'created_at', 'reward', 'by'],
+  // kind: 'word' (from an admin; older rows have none) or 'task' (Done on your own task:
+  // task_id = the rotating task's id, empty for a one-time task; task = its title).
+  // prize: only on rows from older versions.
+  GoodWords: ['id', 'member', 'explanation', 'prize', 'created_at', 'by', 'kind', 'task_id', 'task', 'turn_id'],
   Groceries: ['id', 'name', 'qty', 'category', 'urgent', 'status', 'added_by', 'added_at',
               'updated_by', 'updated_at', 'checked_by', 'bought_at'],
   GroceryCatalog: ['key', 'name', 'category', 'times_bought', 'first_bought', 'last_bought', 'snoozed_until'],
@@ -149,6 +157,23 @@ function migrate_() {
   });
   turns.filter(t => t.type === 'task' && t.status === 'in_progress')
     .forEach(t => { t.status = 'assigned'; writeRow_('Turns', t); });
+  migrateStars_(turns);
+}
+
+/** The short-lived Stars sheet becomes good words (once; the sheet itself is left alone). */
+function migrateStars_(turns) {
+  if (getSetting_('stars_migrated') !== null || !sheet_('Stars')) return;
+  const activities = readAll_('Activities');
+  readAll_('Stars').forEach(s => {
+    const turn = s.turn_id ? turns.find(t => t.id === s.turn_id) : null;
+    const byName = activities.find(a => a.type !== 'fun' && a.name === s.task);
+    writeRow_('GoodWords', s.turn_id
+      ? { id: uid_(), member: s.member, explanation: '', created_at: s.created_at, by: s.member,
+          kind: 'task', task_id: turn ? turn.activity_id || '' : byName ? byName.id : '', task: s.task, turn_id: s.turn_id }
+      : { id: uid_(), member: s.member, explanation: String(s.task || '') || '⭐', created_at: s.created_at,
+          by: s.by || '', kind: 'word' });
+  });
+  saveSetting_('stars_migrated', new Date().toISOString());
 }
 
 /** Logs every member's personal link. */
@@ -166,7 +191,7 @@ const API = {
   getState, completeTurn, offerTurn, answerOffer, requestReplace,
   adminSaveActivity, adminInsertTurn, adminMoveTurn, adminRemoveTurn, adminResetOrder,
   adminCreateOneTimeTask, adminEditTurn, adminSkipTurn, adminAnswerReplace,
-  adminSaveDate, adminDeleteDate, adminGiveCard, adminGiveGoodWord, adminGiveStar,
+  adminSaveDate, adminDeleteDate, adminGiveCard, adminGiveGoodWord,
   adminSaveUser, adminGetLinks,
   addGrocery, editGrocery, deleteGrocery, restoreGrocery, checkGrocery, finishShopping,
   snoozeGrocery, adminAnswerWish, adminSaveGrocerySettings,
@@ -201,7 +226,6 @@ function getState(token) {
   const activityName = id => { const a = activities.find(x => x.id === id); return a ? a.name : ''; };
   const cards = readAll_('Cards');
   const goodWords = readAll_('GoodWords');
-  const stars = readAll_('Stars');
   const now = Date.now();
   const dates = turns.filter(t => t.type === 'fun' && t.status !== 'cancelled');
 
@@ -242,25 +266,19 @@ function getState(token) {
         red: cards.filter(c => c.member === u.name && c.color === 'red').length,
       })),
     },
-    goodWords: {
-      list: goodWords.slice().reverse().slice(0, 100).map(g => ({
-        id: g.id, member: g.member, explanation: String(g.explanation || ''),
-        prize: String(g.prize || ''), created_at: ms_(g.created_at), by: g.by,
-      })),
-      summary: users_().map(u => ({ name: u.name, count: goodWords.filter(g => g.member === u.name).length })),
-      perPrize: GOOD_WORDS_PER_PRIZE,
-    },
-    stars: {
-      summary: users_().map(u => {
-        const n = stars.filter(s => s.member === u.name).length;
-        return { name: u.name, total: n, now: n % STARS_PER_REWARD, rewards: Math.floor(n / STARS_PER_REWARD) };
-      }),
-      rewards: stars.filter(s => Number(s.reward) > 0).reverse().slice(0, 30).map(s => ({
-        id: s.id, member: s.member, reward: Number(s.reward), task: String(s.task || ''), created_at: ms_(s.created_at),
-        manual: !s.turn_id, by: s.by || s.member,
-      })),
-      perReward: STARS_PER_REWARD,
-    },
+    // One list: good words from an admin and Dones on your own task.
+    goodWords: goodWords.slice().sort((a, b) => ms_(b.created_at) - ms_(a.created_at)).slice(0, 100).map(g => ({
+      id: g.id, member: g.member, kind: g.kind === 'task' ? 'task' : 'word', explanation: String(g.explanation || ''),
+      task: String(g.task || ''), prize: String(g.prize || ''), created_at: ms_(g.created_at), by: g.by,
+    })),
+    achievements: (() => {
+      const members = users_().map(u => achievementsOf_(u.name, goodWords, activities));
+      return {
+        members: members,
+        rewards: [].concat.apply([], members.map(m => m.rewardList)).sort((a, b) => b.at - a.at).slice(0, 30),
+        perReward: ACHIEVEMENTS_PER_REWARD,
+      };
+    })(),
     allowance: users_().filter(u => admin || u.name === me.name)
       .map(u => ({ name: u.name, amount: Number(u.allowance) || 0 })),
     groceries: groceryState_(now),
@@ -271,8 +289,9 @@ function getState(token) {
 
 /**
  * Rotating: the turn goes to the next in line. One-time: the task is over.
- * Done on your own task earns a star; an admin's Done for someone else doesn't.
- * The reply carries `star` ({count, reward}) so the page can celebrate it.
+ * Done on your own task earns a good word (and counts toward that task's
+ * achievement); an admin's Done for someone else doesn't. The reply carries
+ * `cheer` so the page can celebrate.
  */
 function completeTurn(token, turnId, note) {
   return withLock_(() => {
@@ -281,36 +300,85 @@ function completeTurn(token, turnId, note) {
     requireParticipant_(me, turn);
     const own = members_(turn.assignee).indexOf(me.name) >= 0;
     closeTurn_(turn, 'done', me.name, clean_(note, 300));
-    const star = own ? addStar_(me.name, turn) : null;
+    const cheer = own ? addGoodWord_({
+      member: me.name, explanation: '', by: me.name, kind: 'task',
+      task_id: turn.activity_id || '', task: turn.title, turn_id: turn.id,
+    }) : null;
     const state = getState(token);
-    if (star) state.star = star;
+    if (cheer) state.cheer = cheer;
     return state;
   });
 }
 
-/** Records a star; every STARS_PER_REWARD-th one is a reward. Returns where the count stands. */
-function addStar_(name, turn, byName) {
-  if (!sheet_('Stars')) return null;   // setup() not run yet for this version
-  const total = readAll_('Stars').filter(s => s.member === name).length + 1;
-  const reward = total % STARS_PER_REWARD === 0 ? total / STARS_PER_REWARD : '';
-  writeRow_('Stars', { id: uid_(), member: name, turn_id: turn.id || '', task: turn.title, created_at: new Date(),
-    reward: reward, by: byName || name });
-  return { member: name, count: total % STARS_PER_REWARD || STARS_PER_REWARD, per: STARS_PER_REWARD, reward: reward || 0 };
+// ---------- Good words and achievements ----------
+
+/** Writes a good word; returns the member's track it counted on and anything new it earned. */
+function addGoodWord_(row) {
+  const activities = readAll_('Activities');
+  const before = achievementsOf_(row.member, readAll_('GoodWords'), activities);
+  row.id = uid_();
+  row.created_at = new Date();
+  writeRow_('GoodWords', row);
+  const after = achievementsOf_(row.member, readAll_('GoodWords'), activities);
+  const track = after.tracks.find(t => t.key === trackKey_(row));
+  return {
+    member: row.member, track: track,
+    earned: after.list.slice(before.list.length),
+    reward: after.rewards > before.rewards ? after.rewards : 0,
+    perReward: ACHIEVEMENTS_PER_REWARD,
+  };
 }
 
-/** An admin gives a member a star by hand (counts toward the reward like any other star). */
-function adminGiveStar(token, input) {
-  return withLock_(() => {
-    const me = auth_(token);
-    requireAdmin_(me);
-    const member = userByName_(input.member);
-    if (!member) throw new Error('Pick a family member.');
-    if (!sheet_('Stars')) throw new Error('Run setup in Apps Script first (it adds the Stars sheet).');
-    const star = addStar_(member.name, { title: clean_(input.reason, 100) }, me.name);
-    const state = getState(token);
-    state.star = star;
-    return state;
+function trackKey_(g) { return g.kind === 'task' ? 'task:' + (g.task_id || 'one-time') : 'words'; }
+
+/** Goal of level i (0-based): the fixed list, then one more level every step. */
+function levelGoal_(levels, step, i) {
+  return i < levels.length ? levels[i] : levels[levels.length - 1] + step * (i - levels.length + 1);
+}
+
+/**
+ * A member's achievements, counted from GoodWords: one track per rotating task
+ * (plus any they are in the rotation of, at 0), one for one-time tasks and one
+ * for good words from an admin. Each level reached is an achievement, dated by
+ * the good word that reached it; every ACHIEVEMENTS_PER_REWARD-th one is a reward.
+ */
+function achievementsOf_(name, goodWords, activities) {
+  const rows = goodWords.filter(g => g.member === name).sort((a, b) => ms_(a.created_at) - ms_(b.created_at));
+  const tracks = {};
+  const track = (key, kind, title) => tracks[key] || (tracks[key] = { key: key, kind: kind, name: title, rows: [] });
+  track('words', 'word', 'Good words');
+  activities.filter(a => a.type !== 'fun' && bool_(a.active) && list_(a.rotation).some(s => members_(s).indexOf(name) >= 0))
+    .forEach(a => track('task:' + a.id, 'task', a.name));
+  rows.forEach(g => {
+    const key = trackKey_(g);
+    const a = g.task_id ? activities.find(x => x.id === g.task_id) : null;
+    track(key, g.kind === 'task' ? 'task' : 'word',
+      key === 'words' ? 'Good words' : key === 'task:one-time' ? 'One-time tasks' : (a ? a.name : String(g.task || 'Task'))).rows.push(g);
   });
+  const list = [];
+  const out = Object.keys(tracks).map(k => {
+    const t = tracks[k];
+    const levels = t.kind === 'task' ? TASK_LEVELS : WORD_LEVELS;
+    const step = t.kind === 'task' ? TASK_STEP : WORD_STEP;
+    let level = 0;
+    while (levelGoal_(levels, step, level) <= t.rows.length) {
+      list.push({ track: t.name, kind: t.kind, level: level + 1, goal: levelGoal_(levels, step, level),
+        at: ms_(t.rows[levelGoal_(levels, step, level) - 1].created_at) });
+      level++;
+    }
+    return { key: t.key, kind: t.kind, name: t.name, count: t.rows.length, level: level,
+      prev: level ? levelGoal_(levels, step, level - 1) : 0, next: levelGoal_(levels, step, level) };
+  }).sort((a, b) => (a.kind === 'word') - (b.kind === 'word') || b.level - a.level || b.count - a.count);
+  list.sort((a, b) => a.at - b.at);
+  const rewards = Math.floor(list.length / ACHIEVEMENTS_PER_REWARD);
+  const rewardList = [];
+  for (let k = 1; k <= rewards; k++) {
+    const items = list.slice((k - 1) * ACHIEVEMENTS_PER_REWARD, k * ACHIEVEMENTS_PER_REWARD);
+    rewardList.push({ member: name, reward: k, at: items[items.length - 1].at,
+      items: items.map(i => ({ track: i.track, kind: i.kind, level: i.level })) });
+  }
+  return { name: name, tracks: out, total: list.length, rewards: rewards,
+    toNext: list.length % ACHIEVEMENTS_PER_REWARD, list: list, rewardList: rewardList };
 }
 
 /**
@@ -628,7 +696,7 @@ function adminGiveCard(token, input) {
   });
 }
 
-/** Every GOOD_WORDS_PER_PRIZE-th good word for a member must come with a prize. */
+/** A good word counts toward the member's "Good words" achievement. */
 function adminGiveGoodWord(token, input) {
   return withLock_(() => {
     const me = auth_(token);
@@ -637,15 +705,10 @@ function adminGiveGoodWord(token, input) {
     if (!member) throw new Error('Pick a family member.');
     const explanation = clean_(input.explanation, 300);
     if (!explanation) throw new Error('Write what the good word is for.');
-    const count = readAll_('GoodWords').filter(g => g.member === member.name).length + 1;
-    const earnsPrize = count % GOOD_WORDS_PER_PRIZE === 0;
-    const prize = earnsPrize ? clean_(input.prize, 100) : '';
-    if (earnsPrize && !prize) throw new Error(`This is good word #${count}: choose the prize.`);
-    writeRow_('GoodWords', {
-      id: uid_(), member: member.name, explanation: explanation, prize: prize,
-      created_at: new Date(), by: me.name,
-    });
-    return getState(token);
+    const cheer = addGoodWord_({ member: member.name, explanation: explanation, by: me.name, kind: 'word' });
+    const state = getState(token);
+    state.cheer = cheer;
+    return state;
   });
 }
 

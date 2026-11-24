@@ -62,7 +62,17 @@
   table.sum { width:100%; border-collapse:collapse; }
   table.sum td { padding:6px 4px; border-bottom:1px solid var(--line); }
   table.sum td.n { text-align:center; width:64px; }
-  .dots { letter-spacing:2px; }
+  .dots { letter-spacing:2px; color:var(--gold); }
+  /* achievements, like the word-games badges: locked ones are grey */
+  .achs { display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:8px; margin-top:10px; }
+  .ach { background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:10px 8px; text-align:center; }
+  .ach .e { font-size:34px; display:block; line-height:1.2; }
+  .ach b { display:block; margin-top:2px; font-size:14px; overflow-wrap:anywhere; }
+  .ach small { display:block; color:var(--muted); font-size:12px; }
+  .ach.locked .e { filter:grayscale(1); opacity:.35; }
+  .ach.locked b { color:var(--muted); }
+  .progress { height:6px; background:var(--line); border-radius:99px; overflow:hidden; margin:6px 0 2px; }
+  .progress div { height:100%; background:var(--gold); border-radius:99px; }
   nav { position:fixed; bottom:0; left:0; right:0; display:flex; background:var(--card); border-top:1px solid var(--line); }
   nav button { flex:1; border:0; background:none; padding:8px 0 12px; font-size:12px; color:var(--muted); cursor:pointer; }
   nav button.on { color:var(--accent); font-weight:600; }
@@ -213,10 +223,10 @@ const MSG = {
   card: c => c.color === 'red'
     ? `🟥 ${c.member}, this is a red card (two yellow cards): ${c.explanation}. Penalty: an extra turn in "${c.red_task}".`
     : `🟨 ${c.member}, you got a yellow card: ${c.explanation}. A second yellow card becomes a red card.`,
-  goodWord: g => `🌟 ${g.member}, a good word for you: ${g.explanation}` +
-    (g.prize ? `\n🎁 That's ${S.goodWords.perPrize} good words — your prize: ${g.prize}` : ''),
-  reward: r => `🏆 ${r.member} collected ${S.stars.perReward} ⭐ — reward time! 🎁` +
-    (r.reward > 1 ? ` (reward #${r.reward})` : ''),
+  goodWord: g => `🌟 ${g.member}, a good word for you: ${g.explanation}`,
+  reward: r => `🏆 ${r.member} earned ${r.items.length} achievements — reward time! 🎁` +
+    (r.reward > 1 ? ` (reward #${r.reward})` : '') + '\n' +
+    r.items.map(i => `${levelOf(i.level).e} ${i.track} — ${levelOf(i.level).t}`).join('\n'),
   nudge: t => `Hi ${t.offer_to}, I asked you in Family Hub to ${t.offer_kind === 'switch' ? 'switch turns with me for' : 'take'} "${t.title}". Can you accept it in the app? 🙏`,
   going: () => `🛒 I'm going to the supermarket soon. Need anything? Add it to the shopping list in Family Hub 👉 ${location.origin + location.pathname}`,
   list: groups => '🛒 Shopping list\n' + groups.map(([cat, items]) => `\n${cat || 'Not sorted'}\n` +
@@ -306,8 +316,11 @@ function cardItem(c) {
   </div>`;
 }
 
+/** One list: good words from a parent, and Dones on your own task. */
 function goodItem(g) {
-  return `<div class="card good">
+  return g.kind === 'task'
+    ? `<div class="card good row"><span>✅ <b>${esc(g.member)}</b> did “${esc(g.task)}”</span><span class="muted">${day(g.created_at)}</span></div>`
+    : `<div class="card good">
     <div class="row"><span class="title">🌟 ${esc(g.member)}</span><span class="muted">${day(g.created_at)}</span></div>
     <div>${esc(g.explanation)}</div>
     ${g.prize ? `<div style="margin-top:4px">🎁 <b>Prize:</b> ${esc(g.prize)}</div>` : ''}
@@ -316,12 +329,50 @@ function goodItem(g) {
   </div>`;
 }
 
+// ---------- achievements (like the word-games badges) ----------
+const LEVELS = [['🥉','Bronze'], ['🥈','Silver'], ['🥇','Gold'], ['🏅','Champion'], ['💎','Diamond'], ['👑','Royal'], ['🚀','Legend']];
+/** Level n (1-based) → its emoji and name; past the list: "Legend 2", "Legend 3"… */
+const levelOf = n => {
+  const [e, t] = LEVELS[Math.min(n, LEVELS.length) - 1];
+  return { e: e, t: n > LEVELS.length ? `${t} ${n - LEVELS.length + 1}` : t };
+};
+const trackIcon = t => t.kind === 'word' ? '🌟' : t.key === 'task:one-time' ? '📌' : '🧹';
+
+function badge(t) {
+  const lv = t.level ? levelOf(t.level) : null;
+  const nx = levelOf(t.level + 1);
+  const pct = Math.round(100 * (t.count - t.prev) / Math.max(1, t.next - t.prev));
+  return `<div class="ach ${lv ? '' : 'locked'}"><span class="e">${lv ? lv.e : trackIcon(t)}</span>
+    <b>${trackIcon(t)} ${esc(t.name)}</b><small>${lv ? lv.t : 'Not yet'}</small>
+    <div class="progress"><div style="width:${pct}%"></div></div><small>${t.count}/${t.next} to ${nx.e}</small></div>`;
+}
+
+function achievementCard(m) {
+  const per = S.achievements.perReward;
+  return `<div class="card">
+    <div class="row"><span class="title">${esc(m.name)}</span>
+      <span>🏅 ${m.total} · 🏆 ${m.rewards}${S.me.isAdmin ? ` <button class="btn sec small" title="Good word for ${esc(m.name)}" onclick="giveGoodWord(S.achievements.members[${S.achievements.members.indexOf(m)}].name)">+🌟</button>` : ''}</span></div>
+    <div class="muted"><span class="dots">${'●'.repeat(m.toNext)}${'○'.repeat(per - m.toNext)}</span> ${per - m.toNext} more achievement${per - m.toNext === 1 ? '' : 's'} to the next reward 🏆</div>
+    <div class="achs">${m.tracks.map(badge).join('')}</div></div>`;
+}
+
 function rewardItem(r) {
   return `<div class="card good">
-    <div class="row"><span class="title">🏆 ${esc(r.member)} · reward #${r.reward}</span><span class="muted">${day(r.created_at)}</span></div>
-    <div class="muted">${S.stars.perReward} ⭐ — the last one ${r.manual ? `from ${esc(r.by)}${r.task ? ': “' + esc(r.task) + '”' : ''}` : `for “${esc(r.task)}”`}</div>
+    <div class="row"><span class="title">🏆 ${esc(r.member)} · reward #${r.reward}</span><span class="muted">${day(r.at)}</span></div>
+    <div class="muted">${r.items.map(i => `${levelOf(i.level).e} ${esc(i.track)}`).join(' · ')}</div>
     ${S.me.isAdmin ? `<div class="actions">${waBtn(MSG.reward(r), 'Announce the reward')}</div>` : ''}
   </div>`;
+}
+
+/** After a Done on your own task or a good word: a new achievement, a reward, or how close the next one is. */
+function cheerToast(c, fallback) {
+  if (!c || !c.track) return toast(fallback);
+  const you = c.member === S.me.name;
+  const name = you ? 'You' : c.member;
+  const last = c.earned[c.earned.length - 1];
+  if (c.reward) return toast(`🏆 ${name} earned a reward! (${c.perReward} achievements)`);
+  if (last) return toast(`${levelOf(last.level).e} New achievement${you ? '' : ' for ' + c.member}: ${last.track} — ${levelOf(last.level).t}!`);
+  toast(`🌟 ${you ? 'Good job!' : c.member + ':'} ${c.track.name} ${c.track.count}/${c.track.next} to ${levelOf(c.track.level + 1).e}`);
 }
 
 // ---------- views ----------
@@ -343,7 +394,7 @@ const VIEWS = {
       <div class="row"><span class="title">${esc(t.title)}</span>
         <span class="${t.status === 'done' ? 'ok' : 'muted'}">${STATUS[t.status] || esc(t.status)}</span></div>
       <div class="muted">${esc(who(t.assignee))} · ${t.completed_at ? when(t.completed_at) : ''}${t.completed_by && !t.members.includes(t.completed_by)
-        ? ' · by ' + esc(t.completed_by) : t.status === 'done' && t.completed_by ? ' · ⭐ ' + esc(t.completed_by) : ''}</div>
+        ? ' · by ' + esc(t.completed_by) : t.status === 'done' && t.completed_by ? ' · 🌟 ' + esc(t.completed_by) : ''}</div>
       ${t.note ? `<div class="muted">“${esc(t.note)}”</div>` : ''}</div>`).join('');
     return (offers ? '<h2>Requests for you</h2>' + offers : '') +
       '<h2>My tasks</h2>' + (mine.length ? mine.map(taskCard).join('') : '<div class="card muted">Nothing for you right now 🎉</div>') +
@@ -415,24 +466,17 @@ const VIEWS = {
       '<h2>All cards</h2>' + (S.cards.list.map(cardItem).join('') || '<div class="card muted">No cards yet 👏</div>');
   },
   fun() {
-    const per = S.goodWords.perPrize;
     const paydays = nextPaydays();
-    const st = S.stars;
-    const stars = !st ? '' : '<h2>Stars</h2><div class="card"><table class="sum"><tr><td></td><td class="muted">⭐ now</td><td class="n muted">🏆 rewards</td>' +
-        (S.me.isAdmin ? '<td></td>' : '') + '</tr>' +
-        st.summary.map(s => `<tr><td>${esc(s.name)}</td>
-          <td class="dots" title="${s.now} of ${st.perReward}">${'★'.repeat(s.now)}${'☆'.repeat(st.perReward - s.now)}</td><td class="n">${s.rewards}</td>` +
-          (S.me.isAdmin ? `<td style="text-align:right"><button class="btn sec small" title="Give ${esc(s.name)} a star" onclick="giveStar(S.stars.summary[${st.summary.indexOf(s)}].name)">+⭐</button></td>` : '') +
-          '</tr>').join('') +
-        `</table><div class="muted" style="margin-top:8px">Press Done on your own task to get a ⭐ (not when a parent marks it for you). Parents can also give a ⭐. Every ${st.perReward} ⭐ earn a reward 🏆</div></div>` +
-        st.rewards.map(rewardItem).join('');
+    const ach = S.achievements;
+    if (!ach) return '<div class="card">⚠️ Achievements need the new Google backend. An admin needs to paste the new Code.gs, run <b>setup</b>, and deploy a new version.</div>';
+    // Kids always; an admin only once they have something. Me first.
+    const people = ach.members.filter(m => S.users.some(u => u.name === m.name && u.role !== 'admin') || m.tracks.some(t => t.count))
+      .sort((a, b) => (b.name === S.me.name) - (a.name === S.me.name));
     return '<h2>Coming dates</h2>' + (S.dates.upcoming.map(t => dateCard(t, false)).join('') || '<div class="card muted">Nothing planned yet.</div>') +
-      stars +
-      '<h2>Good words</h2><div class="card"><table class="sum">' +
-        S.goodWords.summary.map(g => { const p = g.count % per; return `<tr><td>${esc(g.name)}</td>
-          <td class="n">🌟 ${g.count}</td><td class="dots">${'★'.repeat(p)}${'☆'.repeat(per - p)}</td></tr>`; }).join('') +
-        `</table><div class="muted" style="margin-top:8px">Every ${per} good words earn a prize 🎁</div></div>` +
-        S.goodWords.list.map(goodItem).join('') +
+      '<h2>🏅 Achievements</h2>' + people.map(achievementCard).join('') +
+        `<div class="muted" style="margin:-4px 0 10px">Press Done on your own task (not when a parent marks it for you) or get a good word to move up. Every ${ach.perReward} achievements earn a reward 🏆</div>` +
+      (ach.rewards.length ? '<h2>🏆 Rewards</h2>' + ach.rewards.map(rewardItem).join('') : '') +
+      '<h2>🌟 Good words</h2>' + (S.goodWords.slice(0, 40).map(goodItem).join('') || '<div class="card muted">None yet.</div>') +
       '<h2>Allowance</h2>' + (S.allowance.filter(a => a.amount > 0 || !S.me.isAdmin).map(a => `<div class="card">
         <div class="row"><span class="title">💰 ${esc(a.name)}</span><span class="title">${shekel(a.amount)} / month</span></div>
         ${paydays.map(d => `<div class="row muted"><span>${day(d.getTime())}</span><span>${shekel(a.amount)}</span></div>`).join('')}
@@ -482,7 +526,6 @@ const VIEWS = {
       <div class="actions">
         <button class="btn sec" onclick="giveCard()">🟨 Yellow card</button>
         <button class="btn sec" onclick="giveGoodWord()">🌟 Good word</button>
-        ${S.stars ? '<button class="btn sec" onclick="giveStar()">⭐ Star</button>' : ''}
         <button class="btn sec" onclick="editUser()">+ Add member</button>
         <button class="btn sec" onclick="showLinks()">Personal links</button>
         ${S.groceries ? '<button class="btn sec" onclick="grocerySettingsForm()">🛒 Shopping categories</button>' : ''}</div>` +
@@ -501,7 +544,7 @@ function act(btn, promise, msg) { busy(btn); promise.then(s => { if (msg) toast(
 function complete(id, btn) {
   busy(btn);
   call('completeTurn', id, $('#note-' + id).value)
-    .then(s => { starToast(s.star); update(s); })
+    .then(s => { cheerToast(s.cheer, 'Done ✓'); update(s); })
     .catch(() => { if (btn) btn.disabled = false; });
 }
 function answerOffer(id, accept, btn) { act(btn, call('answerOffer', id, accept), accept ? 'It\'s yours now' : 'Done'); }
@@ -614,40 +657,24 @@ function cardRedNotice() {
       : '<div class="overdue">Create a rotating task first.</div>'}</div>` : '';
 }
 
-function giveGoodWord() {
+function giveGoodWord(name) {
   form('🌟 Good word', `
-    <label>For</label><select id="g_who" onchange="goodPrizeNotice()">${memberOptions('')}</select>
+    <label>For</label><select id="g_who" onchange="goodWordNotice()">${memberOptions('', name)}</select>
     <label>What for (everyone will see this)</label><textarea id="g_why" rows="3" maxlength="300"></textarea>
-    <div id="g_prize"></div>`,
-    () => call('adminGiveGoodWord', { member: val('g_who'), explanation: val('g_why'), prize: $('#g_prizeval') ? val('g_prizeval') : '' }));
-  goodPrizeNotice();
+    <div id="g_note" class="muted" style="margin-top:8px"></div>`,
+    () => call('adminGiveGoodWord', { member: val('g_who'), explanation: val('g_why') })
+      .then(s => { cheerToast(s.cheer, 'Saved ✓'); return s; }));
+  goodWordNotice();
 }
-function giveStar(name) {
-  form('⭐ Give a star', `
-    <label>For</label><select id="s_who" onchange="starNotice()">${memberOptions('', name)}</select>
-    <label>What for (optional, everyone will see this)</label><input id="s_why" maxlength="100" placeholder="Helped with the groceries">
-    <div id="s_note"></div>`,
-    () => call('adminGiveStar', { member: val('s_who'), reason: val('s_why') }).then(s => { starToast(s.star); return s; }));
-  starNotice();
-}
-function starNotice() {
-  const s = S.stars.summary.find(x => x.name === val('s_who'));
-  const next = (s ? s.now : 0) + 1;
-  $('#s_note').innerHTML = `<div class="muted" style="margin-top:8px">This will be ⭐ ${next} of ${S.stars.perReward}` +
-    (next === S.stars.perReward ? ' — it completes a 🏆 reward!' : '') + '</div>';
-}
-/** Mine: "Nice! ⭐ 3 of 10"; given by an admin: "⭐ Noa: 3 of 10". */
-function starToast(st) {
-  if (!st) return toast('Done ✓');
-  const mine = st.member === S.me.name;
-  toast(st.reward ? `🏆 ${mine ? 'You' : st.member} earned a reward (${st.per} stars)! The count starts again.`
-    : mine ? `Nice! ⭐ ${st.count} of ${st.per}` : `⭐ ${st.member}: ${st.count} of ${st.per}`);
-}
-function goodPrizeNotice() {
-  const g = S.goodWords.summary.find(x => x.name === val('g_who'));
-  const next = (g ? g.count : 0) + 1;
-  $('#g_prize').innerHTML = next % S.goodWords.perPrize === 0 ? `<div class="notice">🎁 This is good word #${next} — it comes with a prize.
-      <label>Prize</label><input id="g_prizeval" placeholder="Pizza night of your choice"></div>` : '';
+/** Where this good word puts the member on their "Good words" achievement. */
+function goodWordNotice() {
+  const m = S.achievements.members.find(x => x.name === val('g_who'));
+  const t = m && m.tracks.find(x => x.kind === 'word');
+  if (!t) return;
+  $('#g_note').innerHTML = t.count + 1 >= t.next
+    ? `${levelOf(t.level + 1).e} This one earns the <b>${levelOf(t.level + 1).t}</b> “Good words” achievement` +
+      (m.toNext + 1 === S.achievements.perReward ? ' — and a 🏆 reward!' : '!')
+    : `🌟 Good words: ${t.count + 1}/${t.next} to ${levelOf(t.level + 1).e}`;
 }
 
 function editUser(name) {
